@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.venv/
+venv/
+sleap_gui_env/
+tasks/
+pipeline.log.json
+.sleap_pipeline.json
