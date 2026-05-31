@@ -36,10 +36,31 @@ class PipelineApp(tk.Tk):
         self.configure(bg=BG)
         self.config_data = lib.load_config()
         self.log_queue: queue.Queue[str] = queue.Queue()
+        self._configure_styles()
         self._build()
         self._load_config_to_ui()
         self.refresh_history()
         self.after(100, self._drain_log_queue)
+
+    def _configure_styles(self) -> None:
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure(
+            "Pipeline.TButton",
+            background=BUTTON_BG,
+            foreground=WHITE,
+            borderwidth=0,
+            focusthickness=0,
+            padding=(14, 7),
+        )
+        style.map(
+            "Pipeline.TButton",
+            background=[("active", BUTTON_BG), ("pressed", BUTTON_BG), ("disabled", "#95a5a6")],
+            foreground=[("active", WHITE), ("pressed", WHITE), ("disabled", "#ecf0f1")],
+        )
 
     def _build(self) -> None:
         self.columnconfigure(0, weight=1)
@@ -89,32 +110,10 @@ class PipelineApp(tk.Tk):
         ).grid(row=0, column=1, sticky="e", padx=20)
 
     def _build_pipeline_tab(self) -> None:
-        self.pipeline_tab.rowconfigure(0, weight=1)
         self.pipeline_tab.columnconfigure(0, weight=1)
-
-        canvas = tk.Canvas(self.pipeline_tab, bg=BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(self.pipeline_tab, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.grid(row=0, column=0, sticky="nsew")
-        scrollbar.grid(row=0, column=1, sticky="ns")
-
-        inner = tk.Frame(canvas, bg=BG)
-        window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
-        resize_job: dict[str, str | None] = {"id": None}
-        scroll_job: dict[str, str | None] = {"id": None}
-
-        def resize_canvas(event: tk.Event) -> None:
-            if resize_job["id"]:
-                self.after_cancel(resize_job["id"])
-            resize_job["id"] = self.after(50, lambda: canvas.itemconfig(window_id, width=event.width))
-
-        def update_scrollregion(_event: tk.Event) -> None:
-            if scroll_job["id"]:
-                self.after_cancel(scroll_job["id"])
-            scroll_job["id"] = self.after(50, lambda: canvas.configure(scrollregion=canvas.bbox("all")))
-
-        canvas.bind("<Configure>", resize_canvas)
-        inner.bind("<Configure>", update_scrollregion)
+        inner = tk.Frame(self.pipeline_tab, bg=BG)
+        inner.grid(row=0, column=0, sticky="new")
+        inner.columnconfigure(0, weight=1)
 
         self._tool_card(inner)
         for number, title, desc, action_label in STEP_DEFS:
@@ -152,17 +151,11 @@ class PipelineApp(tk.Tk):
             ("Show GL Tasks", self.show_gl_tasks),
             ("Show Slurm Jobs", self.show_slurm_jobs),
         ]:
-            tk.Button(
+            ttk.Button(
                 row,
                 text=label,
                 command=command,
-                bg=BUTTON_BG,
-                fg=WHITE,
-                activebackground=BUTTON_BG,
-                relief="flat",
-                padx=14,
-                pady=7,
-                cursor="hand2",
+                style="Pipeline.TButton",
             ).pack(side="left", padx=(0, 8))
 
     def _step_card(self, parent: tk.Widget, number: str, title: str, desc: str, actions: list[tuple[str, object]]) -> None:
@@ -194,17 +187,11 @@ class PipelineApp(tk.Tk):
         button_frame = tk.Frame(card, bg=WHITE, padx=12)
         button_frame.pack(side="right", fill="y")
         for label, command in actions:
-            tk.Button(
+            ttk.Button(
                 button_frame,
                 text=label,
                 command=command,
-                bg=BUTTON_BG,
-                fg=WHITE,
-                activebackground=BUTTON_BG,
-                relief="flat",
-                padx=14,
-                pady=7,
-                cursor="hand2",
+                style="Pipeline.TButton",
             ).pack(anchor="e", pady=3)
 
     def _set_status_text(self, text: str) -> None:
