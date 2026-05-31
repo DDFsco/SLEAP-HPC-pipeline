@@ -18,7 +18,6 @@ DARK = "#2c3e50"
 MUTED = "#6b7280"
 BUTTON_BG = "#34495e"
 LOG_MAX_LINES = 1000
-PRESET_OPTIONS = ("default", "aggressive", "sensitive")
 
 STEP_DEFS = [
     ("1", "Label Videos", "Open SLEAP locally, label frames, then export a Training Job Package zip into the task folder.", "Open SLEAP"),
@@ -246,6 +245,7 @@ class PipelineApp(tk.Tk):
     def _build_settings_tab(self) -> None:
         self.settings_tab.columnconfigure(1, weight=1)
         self.vars: dict[str, tk.StringVar] = {}
+        inference_configs = lib.list_inference_configs()
         fields = [
             ("gl_user", "GL uniqname"),
             ("slurm_account", "SLURM account"),
@@ -261,7 +261,7 @@ class PipelineApp(tk.Tk):
             var = tk.StringVar()
             self.vars[key] = var
             if key == "default_preset":
-                ttk.Combobox(self.settings_tab, textvariable=var, values=PRESET_OPTIONS, state="readonly").grid(row=row, column=1, sticky="ew", pady=4)
+                ttk.Combobox(self.settings_tab, textvariable=var, values=inference_configs, state="readonly").grid(row=row, column=1, sticky="ew", pady=4)
             else:
                 ttk.Entry(self.settings_tab, textvariable=var).grid(row=row, column=1, sticky="ew", pady=4)
             if key == "local_project":
@@ -280,16 +280,18 @@ class PipelineApp(tk.Tk):
         self.log_text.configure(yscrollcommand=scrollbar.set)
 
     def _load_config_to_ui(self) -> None:
-        if self.config_data.default_preset not in PRESET_OPTIONS:
-            self.config_data.default_preset = "default"
+        inference_configs = lib.list_inference_configs()
+        if self.config_data.default_preset not in inference_configs:
+            self.config_data.default_preset = inference_configs[0]
         for key, var in self.vars.items():
             var.set(str(getattr(self.config_data, key)))
 
     def save_settings(self) -> None:
         for key, var in self.vars.items():
             setattr(self.config_data, key, var.get().strip())
-        if self.config_data.default_preset not in PRESET_OPTIONS:
-            self.config_data.default_preset = "default"
+        inference_configs = lib.list_inference_configs()
+        if self.config_data.default_preset not in inference_configs:
+            self.config_data.default_preset = inference_configs[0]
         for message in lib.ensure_config_defaults(self.config_data):
             self.emit(message)
         self._load_config_to_ui()
@@ -669,7 +671,8 @@ class PresetSelectionDialog:
         self.parent = parent
         self.result: str | None = None
         self.window: tk.Toplevel | None = None
-        self.preset_var = tk.StringVar(value=initial if initial in PRESET_OPTIONS else "default")
+        self.options = lib.list_inference_configs()
+        self.preset_var = tk.StringVar(value=initial if initial in self.options else self.options[0])
 
     def show(self) -> str | None:
         self.window = tk.Toplevel(self.parent)
@@ -679,7 +682,7 @@ class PresetSelectionDialog:
         self.window.columnconfigure(1, weight=1)
 
         ttk.Label(self.window, text="Predict config").grid(row=0, column=0, sticky="w", padx=12, pady=(12, 6))
-        combo = ttk.Combobox(self.window, textvariable=self.preset_var, values=PRESET_OPTIONS, state="readonly")
+        combo = ttk.Combobox(self.window, textvariable=self.preset_var, values=self.options, state="readonly")
         combo.grid(row=0, column=1, sticky="ew", padx=12, pady=(12, 6))
 
         button_row = ttk.Frame(self.window)
@@ -695,7 +698,7 @@ class PresetSelectionDialog:
         if self.window is None:
             return
         preset = self.preset_var.get()
-        if preset not in PRESET_OPTIONS:
+        if preset not in self.options:
             messagebox.showerror("Predict Config", "Select a predict config.", parent=self.window)
             return
         self.result = preset

@@ -19,6 +19,7 @@ CONFIG_PATH = Path.home() / ".sleap_pipeline.json"
 LOG_NAME = "pipeline.log.json"
 GL_SYNC_SKIP_DIRS = {"__pycache__", ".git", ".venv", "venv", "tasks"}
 GL_SYNC_SKIP_SUFFIXES = {".pyc", ".pyo"}
+INFERENCE_CONFIG_SUFFIXES = {".conf", ".env", ".sh"}
 InputCallback = Callable[[str, bool, str | None], str | None]
 
 
@@ -265,6 +266,24 @@ def list_prediction_refs(config: PipelineConfig, task: str | None = None) -> lis
             }
 
     return sorted(refs.values(), key=lambda ref: ref.get("time", ""), reverse=True)
+
+
+def list_inference_configs(base_dir: Path | None = None) -> list[str]:
+    inference_dir = (base_dir or Path(__file__).resolve().parent) / "inference"
+    if not inference_dir.exists():
+        return ["default"]
+    names: list[str] = []
+    for path in sorted(inference_dir.iterdir()):
+        if not path.is_file() or path.name.startswith("."):
+            continue
+        if path.suffix not in INFERENCE_CONFIG_SUFFIXES:
+            continue
+        names.append(safe_task_name(path.stem))
+    unique_names = sorted(set(names))
+    if "default" in unique_names:
+        unique_names.remove("default")
+        unique_names.insert(0, "default")
+    return unique_names or ["default"]
 
 
 def shell_join(parts: Iterable[str]) -> str:

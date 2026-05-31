@@ -168,7 +168,7 @@ tasks/{task}/training_package/
 6. Click `Train` in Step 2, select a task and training package zip from the popup, and confirm the generated run name.
 7. Wait for the Great Lakes Slurm job to finish.
 8. Click `Download Model` in Step 4 and select the trained model/run from the popup.
-9. Click `Predict` in Step 3, select videos, model, and a predict config from `default`, `aggressive`, or `sensitive`.
+9. Click `Predict` in Step 3, select videos, model, and a predict config from the `gl_sync/inference/` config list.
 10. Wait for prediction jobs to finish.
 11. Click `Download Predictions` in Step 4 and select the prediction output from the popup.
 12. Click `Review Predictions` in Step 5 to open a downloaded `.slp` file in SLEAP for correction.
@@ -180,5 +180,6 @@ tasks/{task}/training_package/
 - The `History` tab records submitted training/prediction jobs, run names, package/video names, job IDs, and downloaded files for later model download or prediction reference.
 - `Download Model` and `Predict` show model selection popups populated from training history and local `tasks/{task}/models/` folders, so users do not need to remember run names.
 - `Download Predictions` shows a prediction selection popup populated from prediction history and local `tasks/{task}/exports/` files.
+- Predict configs are shell config files under `gl_sync/inference/`. Add a new `.conf`, `.env`, or `.sh` file there to make it appear in the GUI dropdown after restart/bootstrap.
 - Video upload de-dupe compares remote file size before skipping an upload.
 - This first version does not automatically poll Slurm job completion.
