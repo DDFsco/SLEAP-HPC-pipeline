@@ -39,7 +39,18 @@ import sys
 if sys.version_info < (3, 11):
     raise SystemExit(f"Python 3.11+ required, found {sys.version.split()[0]}")
 PY
-  python3 -m venv "$env_dir"
+
+  if [[ -d "$env_dir" && ! -x "$env_dir/bin/python" ]]; then
+    local backup="${env_dir}.broken.$(date +%Y%m%d_%H%M%S)"
+    echo "Existing env is incomplete; moving aside: $env_dir -> $backup"
+    mv "$env_dir" "$backup"
+  fi
+
+  if [[ ! -x "$env_dir/bin/python" ]]; then
+    mkdir -p "$(dirname "$env_dir")"
+    python3 -m venv "$env_dir"
+  fi
+
   "$env_dir/bin/python" -m pip install --upgrade pip wheel "setuptools<82"
   if command -v uv >/dev/null 2>&1; then
     uv pip install --python "$env_dir/bin/python" "sleap[nn]==1.6.0"

@@ -15,8 +15,6 @@ SLEAP_GPUS="${SLEAP_GPUS:-v100:1}"
 SLEAP_TIME="${SLEAP_TIME:-08:00:00}"
 SLEAP_MEM="${SLEAP_MEM:-32G}"
 SLEAP_CPUS="${SLEAP_CPUS:-4}"
-SLEAP_ENV="${SLEAP_ENV:-$HOME/sleap_env}"
-SLEAP_GUI_ENV="${SLEAP_GUI_ENV:-$HOME/sleap_gui_env}"
 
 resolve_work() {
   if [[ -n "${SLEAP_SCRATCH_DIR:-}" ]]; then
@@ -34,10 +32,12 @@ resolve_work() {
   printf "/scratch/gid_root/gid0/%s/sleap_rat\n" "$USER"
 }
 
+SLEAP_WORK_RESOLVED="$(resolve_work)"
+SLEAP_ENV="${SLEAP_ENV:-$SLEAP_WORK_RESOLVED/env/sleap_env}"
+SLEAP_GUI_ENV="${SLEAP_GUI_ENV:-$SLEAP_WORK_RESOLVED/env/sleap_gui_env}"
+
 ensure_work_dirs() {
-  local work
-  work="$(resolve_work)"
-  mkdir -p "$work"/{labels,training_package,models,videos,exports,logs,jobs}
+  mkdir -p "$SLEAP_WORK_RESOLVED"/{labels,training_package,models,videos,exports,logs,jobs,env}
 }
 
 activate_sleap_env() {
