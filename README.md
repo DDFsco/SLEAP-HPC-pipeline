@@ -7,8 +7,14 @@ Start here:
 - `CURSOR_HANDOFF.md` for implementation context and Cursor coordination notes.
 - `gl_sync/README_LOCAL_GUI.md` for the user-facing GUI workflow.
 
-Run the GUI on this Mac with:
+Run the GUI from the repository root with:
 
 ```bash
-/Users/ddfsco/anaconda3/bin/python3.13 gl_sync/sleap_pipeline_gui.py
+./run_gui.sh
+```
+
+On Windows PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File run_gui.ps1
 ```

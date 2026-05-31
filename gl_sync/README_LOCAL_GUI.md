@@ -53,11 +53,19 @@ The installer lets `sleap[nn]==1.6.0` resolve its own compatible Qt/PySide depen
 
 ## Start the GUI
 
+From the repository root on macOS/Linux:
+
 ```bash
-/Users/ddfsco/anaconda3/bin/python3.13 gl_sync/sleap_pipeline_gui.py
+./run_gui.sh
 ```
 
-On this Mac, avoid `/usr/bin/python3` for the GUI. It is Xcode Python 3.9 and its Tk framework may fail. Use Python 3.11+ with working Tk, such as the Anaconda Python 3.13 shown above.
+On Windows PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File run_gui.ps1
+```
+
+The launcher first uses `~/sleap_gui_env` if it exists. Otherwise it searches for Python 3.11+ on `PATH`.
 
 On first launch, open the Settings tab and fill:
 
