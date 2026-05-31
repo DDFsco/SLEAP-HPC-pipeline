@@ -2,10 +2,23 @@
 set -euo pipefail
 
 SLEAP_CONF="${SLEAP_CONF:-$HOME/sleap_gl.conf}"
+SLEAP_SCRATCH_DIR_OVERRIDE="${SLEAP_SCRATCH_DIR:-}"
+SLEAP_WORK_OVERRIDE="${SLEAP_WORK:-}"
+SLEAP_ENV_OVERRIDE="${SLEAP_ENV:-}"
 
 if [[ -f "$SLEAP_CONF" ]]; then
   # shellcheck source=/dev/null
   source "$SLEAP_CONF"
+fi
+
+if [[ -n "$SLEAP_SCRATCH_DIR_OVERRIDE" ]]; then
+  SLEAP_SCRATCH_DIR="$SLEAP_SCRATCH_DIR_OVERRIDE"
+fi
+if [[ -n "$SLEAP_WORK_OVERRIDE" ]]; then
+  SLEAP_WORK="$SLEAP_WORK_OVERRIDE"
+fi
+if [[ -n "$SLEAP_ENV_OVERRIDE" ]]; then
+  SLEAP_ENV="$SLEAP_ENV_OVERRIDE"
 fi
 
 SLEAP_SLURM_ACCOUNT="${SLEAP_SLURM_ACCOUNT:-${SLURM_ACCOUNT:-}}"
@@ -33,10 +46,24 @@ resolve_work() {
 }
 
 SLEAP_WORK_RESOLVED="$(resolve_work)"
-SLEAP_ENV="${SLEAP_ENV:-$SLEAP_WORK_RESOLVED/env/sleap_env}"
+
+resolve_env_root() {
+  case "$SLEAP_WORK_RESOLVED" in
+    */tasks/*)
+      printf "%s\n" "${SLEAP_WORK_RESOLVED%%/tasks/*}"
+      ;;
+    *)
+      printf "%s\n" "$SLEAP_WORK_RESOLVED"
+      ;;
+  esac
+}
+
+SLEAP_ENV_ROOT="$(resolve_env_root)"
+SLEAP_ENV="${SLEAP_ENV:-$SLEAP_ENV_ROOT/env/sleap_env}"
 
 ensure_work_dirs() {
-  mkdir -p "$SLEAP_WORK_RESOLVED"/{labels,training_package,models,videos,exports,logs,jobs,env}
+  mkdir -p "$SLEAP_WORK_RESOLVED"/{labels,training_package,models,videos,exports,logs,jobs}
+  mkdir -p "$SLEAP_ENV_ROOT/env"
 }
 
 activate_sleap_env() {
