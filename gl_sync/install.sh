@@ -40,11 +40,11 @@ if sys.version_info < (3, 11):
     raise SystemExit(f"Python 3.11+ required, found {sys.version.split()[0]}")
 PY
   python3 -m venv "$env_dir"
-  "$env_dir/bin/python" -m pip install --upgrade pip wheel setuptools
+  "$env_dir/bin/python" -m pip install --upgrade pip wheel "setuptools<82"
   if command -v uv >/dev/null 2>&1; then
-    uv pip install --python "$env_dir/bin/python" "sleap[nn]==1.6.0" "numpy<2" opencv-python-headless==4.8.1.78
+    uv pip install --python "$env_dir/bin/python" "sleap[nn]==1.6.0"
   else
-    "$env_dir/bin/pip" install "sleap[nn]==1.6.0" "numpy<2" opencv-python-headless==4.8.1.78
+    "$env_dir/bin/pip" install "sleap[nn]==1.6.0"
   fi
 }
 

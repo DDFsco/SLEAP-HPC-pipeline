@@ -267,11 +267,16 @@ def bootstrap_local_dirs(config: PipelineConfig) -> None:
 
 
 def default_sleap_command() -> str:
-    candidates = ["sleap", "sleap-label"]
-    for name in candidates:
+    candidates = [
+        Path.home() / "sleap_gui_env" / "bin" / "sleap",
+        Path.home() / "sleap_gui_env" / "bin" / "sleap-label",
+        "sleap",
+        "sleap-label",
+    ]
+    for candidate in candidates:
         try:
-            subprocess.run([name, "--help"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-            return name
+            subprocess.run([str(candidate), "--help"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            return str(candidate)
         except FileNotFoundError:
             continue
     return sys.executable

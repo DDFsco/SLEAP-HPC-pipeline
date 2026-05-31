@@ -28,12 +28,12 @@ if (!(Test-Path $Py)) {
   throw "Could not find venv python at $Py"
 }
 
-& $Py -m pip install --upgrade pip wheel setuptools
+& $Py -m pip install --upgrade pip wheel "setuptools<82"
 
 if (Get-Command uv -ErrorAction SilentlyContinue) {
-  & uv pip install --python $Py "sleap[nn]==1.6.0" "PySide6==6.4.3" "numpy<2" "opencv-python-headless==4.8.1.78"
+  & uv pip install --python $Py "sleap[nn]==1.6.0"
 } else {
-  & $Pip install "sleap[nn]==1.6.0" "PySide6==6.4.3" "numpy<2" "opencv-python-headless==4.8.1.78"
+  & $Pip install "sleap[nn]==1.6.0"
 }
 
 & $Py -c "import importlib.util, sys; missing=[n for n in ('sleap','sleap_nn') if importlib.util.find_spec(n) is None]; sys.exit('Missing imports: '+repr(missing) if missing else 0)"

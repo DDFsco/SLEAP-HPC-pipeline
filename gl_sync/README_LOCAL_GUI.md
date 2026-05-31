@@ -49,6 +49,8 @@ powershell -ExecutionPolicy Bypass -File gl_sync/install_local_gui.ps1
 
 The local environment is for SLEAP labeling and exporting training packages. GPU training and prediction stay on Great Lakes.
 
+The installer lets `sleap[nn]==1.6.0` resolve its own compatible Qt/PySide dependencies. Do not pin an older `PySide6` on Python 3.13.
+
 ## Start the GUI
 
 ```bash

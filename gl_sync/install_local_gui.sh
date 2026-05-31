@@ -35,36 +35,35 @@ else
   exit 1
 fi
 
-"$PY" -m pip install --upgrade pip wheel setuptools
+"$PY" -m pip install --upgrade pip wheel "setuptools<82"
 
 if command -v uv >/dev/null 2>&1; then
-  uv pip install --python "$PY" "sleap[nn]==1.6.0" PySide6==6.4.3 "numpy<2" opencv-python-headless==4.8.1.78
+  uv pip install --python "$PY" "sleap[nn]==1.6.0"
 else
-  "$PIP" install "sleap[nn]==1.6.0" PySide6==6.4.3 "numpy<2" opencv-python-headless==4.8.1.78
+  "$PIP" install "sleap[nn]==1.6.0"
 fi
 
 "$PY" - <<'PY'
 import importlib.util
-import subprocess
 import sys
 
 missing = [name for name in ("sleap", "sleap_nn") if importlib.util.find_spec(name) is None]
 if missing:
     raise SystemExit(f"Missing imports after install: {missing}")
-
-for cmd in (["sleap", "--help"], ["sleap-label", "--help"]):
-    try:
-        result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if result.returncode == 0:
-            print("SLEAP GUI command:", cmd[0])
-            break
-    except FileNotFoundError:
-        continue
-else:
-    raise SystemExit("Neither sleap nor sleap-label is available on PATH.")
-
-print("Local SLEAP GUI environment verified.")
 PY
+
+if [[ -x "$ENV_DIR/bin/sleap" ]]; then
+  "$ENV_DIR/bin/sleap" --help >/dev/null
+  echo "SLEAP GUI command: $ENV_DIR/bin/sleap"
+elif [[ -x "$ENV_DIR/bin/sleap-label" ]]; then
+  "$ENV_DIR/bin/sleap-label" --help >/dev/null
+  echo "SLEAP GUI command: $ENV_DIR/bin/sleap-label"
+else
+  echo "Neither sleap nor sleap-label is available in $ENV_DIR/bin." >&2
+  exit 1
+fi
+
+echo "Local SLEAP GUI environment verified."
 
 echo "Set sleap_label_cmd to one of:"
 echo "  $ENV_DIR/bin/sleap"
