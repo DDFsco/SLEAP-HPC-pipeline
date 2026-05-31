@@ -467,31 +467,26 @@ class PipelineApp(tk.Tk):
 
     def download_predictions(self) -> None:
         self.save_settings()
-        task = self._ask_task(create=False)
-        if not task:
+        selection = PredictionSelectionDialog(self, self.config_data, title="Select Prediction to Download").show()
+        if selection is None:
             return
+        task, remote_rel, file_name = selection
 
         def work() -> None:
             root = lib.ensure_task(self.config_data, task)
             local_exports = root / "exports"
-            remote_exports = f"{lib.remote_task_dir(self.config_data, task)}/exports"
-            listing = lib.ssh(
-                self.config_data,
-                f"ls {remote_exports}/*.predicted.slp 2>/dev/null || true",
-                emit=self.emit,
-                input_callback=self.auth_input,
-            )
-            for remote_file in [line.strip() for line in listing.stdout.splitlines() if line.strip().endswith(".slp")]:
-                local_file = local_exports / Path(remote_file).name
-                if local_file.exists():
-                    continue
+            local_file = local_exports / file_name
+            if local_file.exists():
+                self.emit(f"skip download: {local_file} already exists")
+            else:
+                remote_file = f"{lib.remote_task_dir(self.config_data, task)}/{remote_rel}"
                 lib.sftp_batch(
                     self.config_data,
                     [f"get {sftp_quote(remote_file)} {sftp_quote(local_file)}"],
                     emit=self.emit,
                     input_callback=self.auth_input,
                 )
-                lib.mark_download(self.config_data, "prediction", {"task": task, "file": local_file.name, "path": str(local_file)})
+            lib.mark_download(self.config_data, "prediction", {"task": task, "file": local_file.name, "path": str(local_file)})
             self.after(0, self.refresh_history)
 
         self.run_threaded("Download Predictions", work)
@@ -681,6 +676,108 @@ class ModelSelectionDialog:
             messagebox.showerror(self.title, "Select a model/run.", parent=self.window)
             return
         self.result = (lib.safe_task_name(ref["task"]), lib.safe_task_name(ref["model"]))
+        self.window.destroy()
+
+
+class PredictionSelectionDialog:
+    def __init__(self, parent: PipelineApp, config: lib.PipelineConfig, title: str) -> None:
+        self.parent = parent
+        self.config = config
+        self.title = title
+        self.result: tuple[str, str, str] | None = None
+        self.window: tk.Toplevel | None = None
+        self.task_var = tk.StringVar()
+        self.file_var = tk.StringVar()
+        self.detail_var = tk.StringVar()
+        self.file_combo: ttk.Combobox | None = None
+        self.refs_by_task = self._load_refs()
+
+    def _load_refs(self) -> dict[str, list[dict]]:
+        refs_by_task: dict[str, list[dict]] = {}
+        for ref in lib.list_prediction_refs(self.config):
+            refs_by_task.setdefault(ref["task"], []).append(ref)
+        return refs_by_task
+
+    def show(self) -> tuple[str, str, str] | None:
+        if not self.refs_by_task:
+            messagebox.showwarning(
+                self.title,
+                "No prediction outputs found. Submit a prediction job first.",
+                parent=self.parent,
+            )
+            return None
+
+        self.window = tk.Toplevel(self.parent)
+        self.window.title(self.title)
+        self.window.transient(self.parent)
+        self.window.grab_set()
+        self.window.columnconfigure(1, weight=1)
+
+        ttk.Label(self.window, text="Task").grid(row=0, column=0, sticky="w", padx=12, pady=(12, 6))
+        task_combo = ttk.Combobox(self.window, textvariable=self.task_var, values=list(self.refs_by_task), state="readonly")
+        task_combo.grid(row=0, column=1, sticky="ew", padx=12, pady=(12, 6))
+
+        ttk.Label(self.window, text="Prediction").grid(row=1, column=0, sticky="w", padx=12, pady=6)
+        self.file_combo = ttk.Combobox(self.window, textvariable=self.file_var, state="readonly")
+        self.file_combo.grid(row=1, column=1, sticky="ew", padx=12, pady=6)
+
+        ttk.Label(self.window, textvariable=self.detail_var, wraplength=560, foreground="#555").grid(
+            row=2, column=0, columnspan=2, sticky="ew", padx=12, pady=6
+        )
+
+        button_row = ttk.Frame(self.window)
+        button_row.grid(row=3, column=0, columnspan=2, sticky="e", padx=12, pady=(8, 12))
+        ttk.Button(button_row, text="Cancel", command=self.window.destroy).grid(row=0, column=0, padx=(0, 6))
+        ttk.Button(button_row, text="Download", command=self._confirm).grid(row=0, column=1)
+
+        task_combo.bind("<<ComboboxSelected>>", lambda _event: self._sync_files())
+        self.file_combo.bind("<<ComboboxSelected>>", lambda _event: self._sync_detail())
+        first_task = next(iter(self.refs_by_task))
+        self.task_var.set(first_task)
+        self._sync_files()
+
+        self.window.wait_window()
+        return self.result
+
+    def _sync_files(self) -> None:
+        if self.file_combo is None:
+            return
+        refs = self.refs_by_task.get(self.task_var.get(), [])
+        self.file_combo.configure(values=[ref["file"] for ref in refs])
+        self.file_var.set(refs[0]["file"] if refs else "")
+        self._sync_detail()
+
+    def _sync_detail(self) -> None:
+        ref = self._selected_ref()
+        if not ref:
+            self.detail_var.set("")
+            return
+        parts = [f"Source: {ref.get('source', '')}"]
+        if ref.get("time"):
+            parts.append(f"Time: {ref['time']}")
+        if ref.get("job_id"):
+            parts.append(f"Job ID: {ref['job_id']}")
+        if ref.get("model"):
+            parts.append(f"Model: {ref['model']}")
+        if ref.get("video"):
+            parts.append(f"Video: {ref['video']}")
+        if ref.get("path"):
+            parts.append(f"Path: {ref['path']}")
+        self.detail_var.set(" | ".join(parts))
+
+    def _selected_ref(self) -> dict | None:
+        task = self.task_var.get()
+        file_name = self.file_var.get()
+        return next((ref for ref in self.refs_by_task.get(task, []) if ref["file"] == file_name), None)
+
+    def _confirm(self) -> None:
+        if self.window is None:
+            return
+        ref = self._selected_ref()
+        if not ref:
+            messagebox.showerror(self.title, "Select a prediction output.", parent=self.window)
+            return
+        self.result = (lib.safe_task_name(ref["task"]), ref.get("remote_rel", f"exports/{ref['file']}"), ref["file"])
         self.window.destroy()
 
 

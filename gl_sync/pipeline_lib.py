@@ -195,6 +195,78 @@ def list_model_refs(config: PipelineConfig, task: str | None = None) -> list[dic
     return sorted(refs.values(), key=lambda ref: ref.get("time", ""), reverse=True)
 
 
+def list_prediction_refs(config: PipelineConfig, task: str | None = None) -> list[dict]:
+    refs: dict[tuple[str, str], dict] = {}
+    try:
+        log = load_pipeline_log(config)
+    except Exception:
+        log = {"jobs": [], "downloaded_predictions": []}
+
+    for job in log.get("jobs", []):
+        if job.get("type") != "predict" or not job.get("task") or not job.get("expected_output"):
+            continue
+        if task and safe_task_name(job["task"]) != safe_task_name(task):
+            continue
+        task_name = safe_task_name(job["task"])
+        file_name = Path(job["expected_output"]).name
+        key = (task_name, file_name)
+        refs[key] = {
+            "task": task_name,
+            "file": file_name,
+            "remote_rel": job.get("expected_output", f"exports/{file_name}"),
+            "source": "prediction history",
+            "time": job.get("submitted_at", ""),
+            "job_id": job.get("job_id", ""),
+            "model": job.get("model", ""),
+            "video": job.get("video", ""),
+        }
+
+    for record in log.get("downloaded_predictions", []):
+        if not record.get("task") or not record.get("file"):
+            continue
+        if task and safe_task_name(record["task"]) != safe_task_name(task):
+            continue
+        task_name = safe_task_name(record["task"])
+        file_name = Path(record["file"]).name
+        key = (task_name, file_name)
+        refs[key] = {
+            **refs.get(key, {}),
+            "task": task_name,
+            "file": file_name,
+            "remote_rel": refs.get(key, {}).get("remote_rel", f"exports/{file_name}"),
+            "source": "downloaded prediction",
+            "time": record.get("downloaded_at", refs.get(key, {}).get("time", "")),
+            "path": record.get("path", ""),
+            "job_id": refs.get(key, {}).get("job_id", ""),
+            "model": refs.get(key, {}).get("model", ""),
+            "video": refs.get(key, {}).get("video", ""),
+        }
+
+    for task_name in list_tasks(config):
+        if task and safe_task_name(task_name) != safe_task_name(task):
+            continue
+        exports_dir = task_root(config, task_name) / "exports"
+        if not exports_dir.exists():
+            continue
+        for export_file in sorted(exports_dir.glob("*.slp"), key=lambda p: p.stat().st_mtime, reverse=True):
+            clean_task = safe_task_name(task_name)
+            key = (clean_task, export_file.name)
+            refs[key] = {
+                **refs.get(key, {}),
+                "task": clean_task,
+                "file": export_file.name,
+                "remote_rel": refs.get(key, {}).get("remote_rel", f"exports/{export_file.name}"),
+                "source": "local export file",
+                "time": refs.get(key, {}).get("time", datetime.fromtimestamp(export_file.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")),
+                "path": str(export_file),
+                "job_id": refs.get(key, {}).get("job_id", ""),
+                "model": refs.get(key, {}).get("model", ""),
+                "video": refs.get(key, {}).get("video", ""),
+            }
+
+    return sorted(refs.values(), key=lambda ref: ref.get("time", ""), reverse=True)
+
+
 def shell_join(parts: Iterable[str]) -> str:
     return " ".join(shlex.quote(str(part)) for part in parts)
 
