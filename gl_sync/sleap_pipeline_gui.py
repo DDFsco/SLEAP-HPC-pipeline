@@ -82,7 +82,7 @@ class PipelineApp(tk.Tk):
         ).grid(row=0, column=0, sticky="w", padx=20)
         tk.Label(
             header,
-            text="University of Michigan - Great Lakes HPC",
+            text="Rothschild Lab",
             font=("Arial", 10),
             fg="#bdc3c7",
             bg=DARK,
