@@ -2,9 +2,10 @@
 
 Local GUI workflow for running SLEAP labeling locally while submitting training and prediction jobs to the University of Michigan Great Lakes cluster.
 
+![SLEAP Pipeline Manager GUI](docs/gui_pipeline.png)
+
 Start here:
 
-- `CURSOR_HANDOFF.md` for implementation context and Cursor coordination notes.
 - `gl_sync/README_LOCAL_GUI.md` for the user-facing GUI workflow.
 
 Run the GUI from the repository root with:
