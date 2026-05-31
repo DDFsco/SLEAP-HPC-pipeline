@@ -16,6 +16,15 @@ import importlib.util
 missing = [name for name in ("sleap", "sleap_nn") if importlib.util.find_spec(name) is None]
 if missing:
     raise SystemExit("missing imports: " + ", ".join(missing))
+import torch
+torch_version = getattr(torch, "__version__", "")
+cuda_version = getattr(torch.version, "cuda", None)
+print(f"torch={torch_version} cuda={cuda_version}")
+expected_build = "cu121"
+if expected_build not in torch_version:
+    raise SystemExit(
+        f"torch build {torch_version!r} is not the expected +{expected_build} build for Great Lakes V100 GPUs"
+    )
 PY
   fi
 
@@ -28,6 +37,12 @@ PY
 
 install_env() {
   local env_dir="$1"
+  local torch_build="${SLEAP_TORCH_BUILD:-cu121}"
+  local torch_version="${SLEAP_TORCH_VERSION:-2.5.1}"
+  local torchvision_version="${SLEAP_TORCHVISION_VERSION:-0.20.1}"
+  local torch_index_url="${SLEAP_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}"
+  local constraint_file
+
   maybe_load_python_module
   python3 - <<'PY'
 import sys
@@ -47,11 +62,21 @@ PY
   fi
 
   "$env_dir/bin/python" -m pip install --upgrade pip wheel "setuptools<82"
-  if command -v uv >/dev/null 2>&1; then
-    uv pip install --python "$env_dir/bin/python" "sleap[nn]==1.6.0"
-  else
-    "$env_dir/bin/pip" install "sleap[nn]==1.6.0"
-  fi
+  constraint_file="$(mktemp)"
+  cat > "$constraint_file" <<EOF
+torch==${torch_version}+${torch_build}
+torchvision==${torchvision_version}+${torch_build}
+EOF
+
+  "$env_dir/bin/pip" install \
+    --index-url "$torch_index_url" \
+    "torch==${torch_version}+${torch_build}" \
+    "torchvision==${torchvision_version}+${torch_build}"
+  "$env_dir/bin/pip" install \
+    --extra-index-url "$torch_index_url" \
+    --constraint "$constraint_file" \
+    "sleap[nn]==1.6.0"
+  rm -f "$constraint_file"
 }
 
 if [[ "${1:-}" == "--check" ]]; then

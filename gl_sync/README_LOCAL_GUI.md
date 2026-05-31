@@ -116,6 +116,15 @@ On Great Lakes, `install.sh` creates only the remote training/prediction environ
 {SLEAP_SCRATCH_DIR}/env/sleap_env
 ```
 
+For Great Lakes V100 GPUs, the remote installer pins PyTorch to CUDA 12.1 wheels:
+
+```text
+torch==2.5.1+cu121
+torchvision==0.20.1+cu121
+```
+
+This avoids newer CUDA 13 PyTorch wheels that do not include kernels for V100 compute capability 7.0.
+
 The SLEAP GUI environment is local-only and is installed by `install_local_gui.sh` or `install_local_gui.ps1`.
 
 Training and prediction then call:
