@@ -19,14 +19,9 @@ if missing:
 PY
   fi
 
-  if [[ ! -x "$SLEAP_GUI_ENV/bin/python" ]]; then
-    echo "FAIL: missing $SLEAP_GUI_ENV/bin/python"
-    failed=1
-  fi
-
   ensure_work_dirs
   if [[ "$failed" -eq 0 ]]; then
-    echo "OK: GL SLEAP environments and work directories look ready."
+    echo "OK: GL SLEAP environment and work directories look ready."
   fi
   return "$failed"
 }
@@ -67,5 +62,4 @@ fi
 echo "Installing/checking SLEAP on Great Lakes."
 ensure_work_dirs
 install_env "$SLEAP_ENV"
-install_env "$SLEAP_GUI_ENV"
 check_env

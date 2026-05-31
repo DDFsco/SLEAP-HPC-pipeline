@@ -34,7 +34,6 @@ resolve_work() {
 
 SLEAP_WORK_RESOLVED="$(resolve_work)"
 SLEAP_ENV="${SLEAP_ENV:-$SLEAP_WORK_RESOLVED/env/sleap_env}"
-SLEAP_GUI_ENV="${SLEAP_GUI_ENV:-$SLEAP_WORK_RESOLVED/env/sleap_gui_env}"
 
 ensure_work_dirs() {
   mkdir -p "$SLEAP_WORK_RESOLVED"/{labels,training_package,models,videos,exports,logs,jobs,env}

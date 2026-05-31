@@ -110,6 +110,14 @@ If the check fails, it automatically runs:
 bash ~/gl_sync/install.sh
 ```
 
+On Great Lakes, `install.sh` creates only the remote training/prediction environment:
+
+```text
+{SLEAP_SCRATCH_DIR}/env/sleap_env
+```
+
+The SLEAP GUI environment is local-only and is installed by `install_local_gui.sh` or `install_local_gui.ps1`.
+
 Training and prediction then call:
 
 ```bash
