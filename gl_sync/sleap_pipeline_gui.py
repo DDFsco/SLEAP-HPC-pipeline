@@ -16,28 +16,16 @@ BG = "#f5f6fa"
 WHITE = "#ffffff"
 DARK = "#2c3e50"
 MUTED = "#6b7280"
-BLUE = "#3498db"
-PURPLE = "#8e44ad"
-ORANGE = "#e67e22"
-GREEN = "#27ae60"
-RED = "#e74c3c"
-YELLOW = "#f39c12"
-LIGHT_BG = "#ecf0f1"
+BUTTON_BG = "#34495e"
+LOG_MAX_LINES = 1000
 
 STEP_DEFS = [
-    ("1", "Label Videos", "Open SLEAP locally, label frames, then export a Training Job Package zip into the task folder.", BLUE, "Open SLEAP"),
-    ("2", "Train Model", "Select a task training package, upload it to Great Lakes, and submit a GPU Slurm training job.", PURPLE, "Train"),
-    ("3", "Run Inference", "Select a trained model and video files, upload videos, and submit prediction jobs on Great Lakes.", ORANGE, "Predict"),
-    ("4", "Download Results", "Download trained models or prediction files from Great Lakes back into the local task folders.", GREEN, "Download"),
-    ("5", "Review / Correct", "Open downloaded predictions in SLEAP, correct labels, export a new package, and repeat training if needed.", RED, "Review"),
+    ("1", "Label Videos", "Open SLEAP locally, label frames, then export a Training Job Package zip into the task folder.", "Open SLEAP"),
+    ("2", "Train Model", "Select a task training package, upload it to Great Lakes, and submit a GPU Slurm training job.", "Train"),
+    ("3", "Run Inference", "Select a trained model and video files, upload videos, and submit prediction jobs on Great Lakes.", "Predict"),
+    ("4", "Download Results", "Download trained models or prediction files from Great Lakes back into the local task folders.", "Download"),
+    ("5", "Review / Correct", "Open downloaded predictions in SLEAP, correct labels, export a new package, and repeat training if needed.", "Review"),
 ]
-
-STEP_BY_THREAD_LABEL = {
-    "Train": "2",
-    "Predict": "3",
-    "Download Model": "4",
-    "Download Predictions": "4",
-}
 
 
 class PipelineApp(tk.Tk):
@@ -48,7 +36,6 @@ class PipelineApp(tk.Tk):
         self.configure(bg=BG)
         self.config_data = lib.load_config()
         self.log_queue: queue.Queue[str] = queue.Queue()
-        self.step_labels: dict[str, tk.Label] = {}
         self._build()
         self._load_config_to_ui()
         self.refresh_history()
@@ -113,11 +100,24 @@ class PipelineApp(tk.Tk):
 
         inner = tk.Frame(canvas, bg=BG)
         window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
-        canvas.bind("<Configure>", lambda event: canvas.itemconfig(window_id, width=event.width))
-        inner.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+        resize_job: dict[str, str | None] = {"id": None}
+        scroll_job: dict[str, str | None] = {"id": None}
+
+        def resize_canvas(event: tk.Event) -> None:
+            if resize_job["id"]:
+                self.after_cancel(resize_job["id"])
+            resize_job["id"] = self.after(50, lambda: canvas.itemconfig(window_id, width=event.width))
+
+        def update_scrollregion(_event: tk.Event) -> None:
+            if scroll_job["id"]:
+                self.after_cancel(scroll_job["id"])
+            scroll_job["id"] = self.after(50, lambda: canvas.configure(scrollregion=canvas.bbox("all")))
+
+        canvas.bind("<Configure>", resize_canvas)
+        inner.bind("<Configure>", update_scrollregion)
 
         self._tool_card(inner)
-        for number, title, desc, color, action_label in STEP_DEFS:
+        for number, title, desc, action_label in STEP_DEFS:
             if action_label == "Open SLEAP":
                 actions = [("Open SLEAP", self.open_sleap)]
             elif action_label == "Train":
@@ -128,7 +128,7 @@ class PipelineApp(tk.Tk):
                 actions = [("Download Model", self.download_model), ("Download Predictions", self.download_predictions)]
             else:
                 actions = [("Review Predictions", self.review_predictions)]
-            self._step_card(inner, number, title, desc, color, actions)
+            self._step_card(inner, number, title, desc, actions)
 
     def _tool_card(self, parent: tk.Widget) -> None:
         card = tk.Frame(parent, bg=WHITE, highlightbackground="#dfe6e9", highlightthickness=1)
@@ -147,44 +147,39 @@ class PipelineApp(tk.Tk):
         ).pack(anchor="w", pady=(4, 10))
         row = tk.Frame(body, bg=WHITE)
         row.pack(fill="x")
-        for label, command, color in [
-            ("Login GL / Bootstrap", self.login_gl, DARK),
-            ("Show GL Tasks", self.show_gl_tasks, BLUE),
-            ("Show Slurm Jobs", self.show_slurm_jobs, PURPLE),
+        for label, command in [
+            ("Login GL / Bootstrap", self.login_gl),
+            ("Show GL Tasks", self.show_gl_tasks),
+            ("Show Slurm Jobs", self.show_slurm_jobs),
         ]:
             tk.Button(
                 row,
                 text=label,
                 command=command,
-                bg=color,
+                bg=BUTTON_BG,
                 fg=WHITE,
-                activebackground=color,
+                activebackground=BUTTON_BG,
                 relief="flat",
                 padx=14,
                 pady=7,
                 cursor="hand2",
             ).pack(side="left", padx=(0, 8))
 
-    def _step_card(self, parent: tk.Widget, number: str, title: str, desc: str, color: str, actions: list[tuple[str, object]]) -> None:
+    def _step_card(self, parent: tk.Widget, number: str, title: str, desc: str, actions: list[tuple[str, object]]) -> None:
         card = tk.Frame(parent, bg=WHITE, highlightbackground="#dfe6e9", highlightthickness=1)
         card.pack(fill="x", padx=14, pady=7)
-        tk.Frame(card, bg=color, width=6).pack(side="left", fill="y")
+        tk.Frame(card, bg=BUTTON_BG, width=5).pack(side="left", fill="y")
 
         body = tk.Frame(card, bg=WHITE, padx=14, pady=12)
         body.pack(side="left", fill="both", expand=True)
 
-        top = tk.Frame(body, bg=WHITE)
-        top.pack(fill="x")
         tk.Label(
-            top,
+            body,
             text=f"Step {number}: {title}",
             font=("Arial", 12, "bold"),
             bg=WHITE,
             fg=DARK,
-        ).pack(side="left")
-        status = tk.Label(top, text="Pending", font=("Arial", 9), bg=WHITE, fg=MUTED)
-        status.pack(side="right")
-        self.step_labels[number] = status
+        ).pack(anchor="w")
 
         tk.Label(
             body,
@@ -203,9 +198,9 @@ class PipelineApp(tk.Tk):
                 button_frame,
                 text=label,
                 command=command,
-                bg=color,
+                bg=BUTTON_BG,
                 fg=WHITE,
-                activebackground=color,
+                activebackground=BUTTON_BG,
                 relief="flat",
                 padx=14,
                 pady=7,
@@ -214,14 +209,6 @@ class PipelineApp(tk.Tk):
 
     def _set_status_text(self, text: str) -> None:
         self.after(0, lambda: self.status.set(text))
-
-    def _set_step_status(self, step: str, text: str, color: str) -> None:
-        def update() -> None:
-            label = self.step_labels.get(step)
-            if label is not None:
-                label.config(text=text, fg=color)
-
-        self.after(0, update)
 
     def _build_history_tab(self) -> None:
         self.history_tab.rowconfigure(0, weight=1)
@@ -300,7 +287,6 @@ class PipelineApp(tk.Tk):
         self._load_config_to_ui()
         lib.save_config(self.config_data)
         lib.bootstrap_local_dirs(self.config_data)
-        self.refresh_history()
         self.emit("Settings saved.")
         self._set_status_text("Settings saved")
 
@@ -324,25 +310,21 @@ class PipelineApp(tk.Tk):
             except queue.Empty:
                 break
             self.log_text.insert("end", line + "\n")
+            line_count = int(self.log_text.index("end-1c").split(".")[0])
+            if line_count > LOG_MAX_LINES:
+                self.log_text.delete("1.0", f"{line_count - LOG_MAX_LINES + 1}.0")
             self.log_text.see("end")
         self.after(100, self._drain_log_queue)
 
     def run_threaded(self, label: str, func) -> None:
         def worker() -> None:
             self._set_status_text(f"{label} running")
-            step = STEP_BY_THREAD_LABEL.get(label)
-            if step:
-                self._set_step_status(step, "Running", YELLOW)
             try:
                 func()
                 self._set_status_text(f"{label} finished")
-                if step:
-                    self._set_step_status(step, "Done", GREEN)
             except Exception as exc:
                 self.emit(f"ERROR: {exc}")
                 self._set_status_text(f"{label} failed")
-                if step:
-                    self._set_step_status(step, "Error", RED)
                 self.after(0, lambda: messagebox.showerror(label, str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -504,10 +486,8 @@ class PipelineApp(tk.Tk):
             subprocess.Popen([cmd, str(labels_dir)])
         except FileNotFoundError as exc:
             messagebox.showerror("Open SLEAP", f"Could not launch SLEAP command: {cmd}\n{exc}")
-            self._set_step_status("1", "Error", RED)
             return
         self.emit(f"Opened SLEAP for {labels_dir}")
-        self._set_step_status("1", "Running", YELLOW)
         messagebox.showinfo("Export Training Package", "After labeling, export the training package zip into this task's training_package folder.")
 
     def review_predictions(self) -> None:
@@ -528,9 +508,7 @@ class PipelineApp(tk.Tk):
                 self.emit("Opened SLEAP for review.")
         except FileNotFoundError as exc:
             messagebox.showerror("Review Predictions", f"Could not launch SLEAP command: {cmd}\n{exc}")
-            self._set_step_status("5", "Error", RED)
             return
-        self._set_step_status("5", "Running", YELLOW)
 
     def train(self) -> None:
         self.save_settings()
