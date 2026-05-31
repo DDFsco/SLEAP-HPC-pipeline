@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import pty
+import select
 import shlex
 import subprocess
 import sys
@@ -16,6 +18,7 @@ CONFIG_PATH = Path.home() / ".sleap_pipeline.json"
 LOG_NAME = "pipeline.log.json"
 GL_SYNC_SKIP_DIRS = {"__pycache__", ".git", ".venv", "venv", "tasks"}
 GL_SYNC_SKIP_SUFFIXES = {".pyc", ".pyo"}
+InputCallback = Callable[[str, bool, str | None], str | None]
 
 
 def utc_now() -> str:
@@ -152,13 +155,123 @@ def run_streaming(
     return completed
 
 
-def ssh(config: PipelineConfig, remote_command: str, emit: Callable[[str], None] | None = None, check: bool = True):
+def prompt_kind(text: str) -> tuple[str, bool, str | None] | None:
+    tail = text.lower()[-1200:]
+    if "are you sure you want to continue connecting" in tail or "(yes/no" in tail:
+        return ("SSH host key confirmation. Type yes to trust this host.", False, "yes")
+    if "password:" in tail:
+        return ("Great Lakes password", True, None)
+    if "passcode" in tail:
+        return ("Duo passcode", False, None)
+    if "verification code" in tail:
+        return ("Verification code", False, None)
+    if "keyboard-interactive" in tail and tail.rstrip().endswith(":"):
+        return ("Great Lakes authentication response", True, None)
+    return None
+
+
+def run_interactive(
+    args: list[str],
+    emit: Callable[[str], None] | None = None,
+    input_callback: InputCallback | None = None,
+    check: bool = True,
+    stdin_text: str | None = None,
+    wait_for_prompt: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    emit = emit or (lambda line: None)
+    emit(f"$ {shell_join(args)}")
+
+    master_fd, slave_fd = pty.openpty()
+    proc = subprocess.Popen(args, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, close_fds=True)
+    os.close(slave_fd)
+
+    output: list[str] = []
+    pending = ""
+    sent_stdin = False
+
+    try:
+        while True:
+            ready, _, _ = select.select([master_fd], [], [], 0.1)
+            if ready:
+                try:
+                    data = os.read(master_fd, 4096)
+                except OSError:
+                    data = b""
+                if not data:
+                    break
+                text = data.decode(errors="replace")
+                output.append(text)
+                pending = (pending + text)[-2000:]
+                for line in text.replace("\r", "").splitlines():
+                    if line.strip():
+                        emit(line.rstrip())
+
+                if stdin_text is not None and not sent_stdin and wait_for_prompt and wait_for_prompt in pending:
+                    os.write(master_fd, stdin_text.encode())
+                    sent_stdin = True
+
+                if input_callback:
+                    prompt = prompt_kind(pending)
+                    if prompt:
+                        label, secret, default = prompt
+                        response = input_callback(label + "\n\n" + pending.strip()[-500:], secret, default)
+                        if response is None:
+                            proc.terminate()
+                            raise RuntimeError("Authentication input cancelled.")
+                        os.write(master_fd, (response + "\n").encode())
+                        pending = ""
+
+            if stdin_text is not None and not sent_stdin and not wait_for_prompt and proc.poll() is None:
+                # Used only for commands whose stdin is known to be safe immediately.
+                os.write(master_fd, stdin_text.encode())
+                sent_stdin = True
+
+            if proc.poll() is not None:
+                while True:
+                    ready, _, _ = select.select([master_fd], [], [], 0)
+                    if not ready:
+                        break
+                    try:
+                        data = os.read(master_fd, 4096)
+                    except OSError:
+                        break
+                    if not data:
+                        break
+                    text = data.decode(errors="replace")
+                    output.append(text)
+                    for line in text.replace("\r", "").splitlines():
+                        if line.strip():
+                            emit(line.rstrip())
+                break
+    finally:
+        os.close(master_fd)
+
+    code = proc.wait()
+    completed = subprocess.CompletedProcess(args, code, "".join(output), "")
+    if check and code:
+        raise subprocess.CalledProcessError(code, args, completed.stdout, completed.stderr)
+    return completed
+
+
+def ssh(
+    config: PipelineConfig,
+    remote_command: str,
+    emit: Callable[[str], None] | None = None,
+    check: bool = True,
+    input_callback: InputCallback | None = None,
+):
+    if input_callback:
+        return run_interactive(["ssh", config.ssh_target, remote_command], emit=emit, check=check, input_callback=input_callback)
     return run_streaming(["ssh", config.ssh_target, remote_command], emit=emit, check=check)
 
 
-def ssh_check(config: PipelineConfig, emit: Callable[[str], None] | None = None) -> bool:
+def ssh_check(
+    config: PipelineConfig,
+    emit: Callable[[str], None] | None = None,
+    input_callback: InputCallback | None = None,
+) -> bool:
     try:
-        ssh(config, "echo ok", emit=emit)
+        ssh(config, "echo ok", emit=emit, input_callback=input_callback)
         return True
     except Exception as exc:
         if emit:
@@ -166,8 +279,23 @@ def ssh_check(config: PipelineConfig, emit: Callable[[str], None] | None = None)
         return False
 
 
-def sftp_batch(config: PipelineConfig, commands: list[str], emit: Callable[[str], None] | None = None):
+def sftp_batch(
+    config: PipelineConfig,
+    commands: list[str],
+    emit: Callable[[str], None] | None = None,
+    input_callback: InputCallback | None = None,
+):
     emit = emit or (lambda line: None)
+    if input_callback:
+        emit("$ sftp " + config.ssh_target)
+        batch = "\n".join(commands + ["bye"]) + "\n"
+        return run_interactive(
+            ["sftp", config.ssh_target],
+            emit=emit,
+            input_callback=input_callback,
+            stdin_text=batch,
+            wait_for_prompt="sftp>",
+        )
     emit("$ sftp -b - " + config.ssh_target)
     proc = subprocess.run(
         ["sftp", "-b", "-", config.ssh_target],
@@ -184,19 +312,28 @@ def sftp_batch(config: PipelineConfig, commands: list[str], emit: Callable[[str]
     return proc
 
 
-def remote_home(config: PipelineConfig, emit: Callable[[str], None] | None = None) -> str:
-    result = ssh(config, 'printf "%s" "$HOME"', emit=emit)
+def remote_home(
+    config: PipelineConfig,
+    emit: Callable[[str], None] | None = None,
+    input_callback: InputCallback | None = None,
+) -> str:
+    result = ssh(config, 'printf "%s" "$HOME"', emit=emit, input_callback=input_callback)
     home = result.stdout.strip()
     if not home:
         raise RuntimeError("Could not resolve remote $HOME.")
     return home
 
 
-def expand_remote_path(config: PipelineConfig, remote_path: str, emit: Callable[[str], None] | None = None) -> str:
+def expand_remote_path(
+    config: PipelineConfig,
+    remote_path: str,
+    emit: Callable[[str], None] | None = None,
+    input_callback: InputCallback | None = None,
+) -> str:
     if remote_path == "~":
-        return remote_home(config, emit=emit)
+        return remote_home(config, emit=emit, input_callback=input_callback)
     if remote_path.startswith("~/"):
-        return remote_home(config, emit=emit).rstrip("/") + "/" + remote_path[2:]
+        return remote_home(config, emit=emit, input_callback=input_callback).rstrip("/") + "/" + remote_path[2:]
     return remote_path
 
 
@@ -219,6 +356,7 @@ def upload_gl_sync(
     config: PipelineConfig,
     local_gl_sync: Path,
     emit: Callable[[str], None] | None = None,
+    input_callback: InputCallback | None = None,
 ) -> str:
     local_gl_sync = local_gl_sync.resolve()
     if not local_gl_sync.is_dir():
@@ -229,7 +367,7 @@ def upload_gl_sync(
     if missing:
         raise FileNotFoundError("Missing required GL scripts in local gl_sync: " + ", ".join(missing))
 
-    remote_root = expand_remote_path(config, config.gl_sync_remote, emit=emit).rstrip("/")
+    remote_root = expand_remote_path(config, config.gl_sync_remote, emit=emit, input_callback=input_callback).rstrip("/")
     files = [
         path
         for path in sorted(local_gl_sync.rglob("*"))
@@ -240,15 +378,15 @@ def upload_gl_sync(
     if emit:
         emit(f"Uploading gl_sync to GL: {local_gl_sync} -> {remote_root}")
     lib_dirs = " ".join(shlex.quote(path) for path in [remote_root, *dirs])
-    ssh(config, f"mkdir -p {lib_dirs}", emit=emit)
+    ssh(config, f"mkdir -p {lib_dirs}", emit=emit, input_callback=input_callback)
 
     commands: list[str] = []
     for path in files:
         rel = path.relative_to(local_gl_sync)
         remote_file = remote_root + "/" + rel.as_posix()
         commands.append(f"put {sftp_quote(path)} {sftp_quote(remote_file)}")
-    sftp_batch(config, commands, emit=emit)
-    ssh(config, f"chmod +x {shlex.quote(remote_root)}/*.sh", emit=emit, check=False)
+    sftp_batch(config, commands, emit=emit, input_callback=input_callback)
+    ssh(config, f"chmod +x {shlex.quote(remote_root)}/*.sh", emit=emit, check=False, input_callback=input_callback)
     if emit:
         emit(f"Uploaded {len(files)} gl_sync file(s).")
     return remote_root

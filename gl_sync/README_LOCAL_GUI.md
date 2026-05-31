@@ -69,6 +69,14 @@ On first launch, open the Settings tab and fill:
 
 Then click `Save Settings`.
 
+During `Login GL / Bootstrap`, SSH/SFTP may ask for a password, Duo passcode, verification code, or host-key confirmation. The GUI watches the terminal session and opens a popup when one of these prompts appears. Enter the requested value and click OK; the GUI sends it back to the SSH/SFTP process.
+
+If Great Lakes rejects the login immediately with `Permission denied (publickey,keyboard-interactive)` and no popup appears, SSH is not offering an interactive prompt to the client. In that case, first confirm that normal Terminal login works:
+
+```bash
+ssh uniqname@greatlakes.arc-ts.umich.edu
+```
+
 ## Great Lakes Setup
 
 The GUI expects SSH access to work:

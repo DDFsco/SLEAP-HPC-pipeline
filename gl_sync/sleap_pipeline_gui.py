@@ -138,21 +138,45 @@ class PipelineApp(tk.Tk):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def auth_input(self, prompt: str, secret: bool, default: str | None = None) -> str | None:
+        done = threading.Event()
+        result: dict[str, str | None] = {"value": None}
+
+        def ask() -> None:
+            result["value"] = simpledialog.askstring(
+                "Great Lakes Authentication",
+                prompt,
+                initialvalue=default or "",
+                show="*" if secret else None,
+                parent=self,
+            )
+            done.set()
+
+        self.after(0, ask)
+        done.wait()
+        return result["value"]
+
     def login_gl(self) -> None:
         self.save_settings()
 
         def work() -> None:
             lib.bootstrap_local_dirs(self.config_data)
-            if not lib.ssh_check(self.config_data, emit=self.emit):
+            if not lib.ssh_check(self.config_data, emit=self.emit, input_callback=self.auth_input):
                 raise RuntimeError("SSH check failed. Configure SSH keys for Great Lakes first.")
             local_gl_sync = Path(__file__).resolve().parent
-            remote_gl_sync = lib.upload_gl_sync(self.config_data, local_gl_sync, emit=self.emit)
+            remote_gl_sync = lib.upload_gl_sync(self.config_data, local_gl_sync, emit=self.emit, input_callback=self.auth_input)
             remote_tasks = f"mkdir -p {lib.remote_task_dir(self.config_data, '_bootstrap_check').rsplit('/', 1)[0]}"
-            lib.ssh(self.config_data, remote_tasks, emit=self.emit)
-            check = lib.ssh(self.config_data, f"bash {sh_quote(remote_gl_sync + '/install.sh')} --check", emit=self.emit, check=False)
+            lib.ssh(self.config_data, remote_tasks, emit=self.emit, input_callback=self.auth_input)
+            check = lib.ssh(
+                self.config_data,
+                f"bash {sh_quote(remote_gl_sync + '/install.sh')} --check",
+                emit=self.emit,
+                check=False,
+                input_callback=self.auth_input,
+            )
             if check.returncode:
                 self.emit("GL install check failed; running remote install.sh.")
-                lib.ssh(self.config_data, f"bash {sh_quote(remote_gl_sync + '/install.sh')}", emit=self.emit)
+                lib.ssh(self.config_data, f"bash {sh_quote(remote_gl_sync + '/install.sh')}", emit=self.emit, input_callback=self.auth_input)
             else:
                 self.emit("GL install check passed.")
             self.emit("GL SSH, gl_sync upload, environment check, and task root are ready.")
@@ -206,17 +230,18 @@ class PipelineApp(tk.Tk):
 
         def work() -> None:
             remote_root = lib.remote_task_dir(self.config_data, task)
-            lib.ssh(self.config_data, f"mkdir -p {remote_root}/training_package", emit=self.emit)
+            lib.ssh(self.config_data, f"mkdir -p {remote_root}/training_package", emit=self.emit, input_callback=self.auth_input)
             lib.sftp_batch(
                 self.config_data,
                 [f"put {sftp_quote(zip_file)} {sftp_quote(remote_root + '/training_package/' + zip_file.name)}"],
                 emit=self.emit,
+                input_callback=self.auth_input,
             )
             remote_cmd = (
                 f"SLEAP_SCRATCH_DIR={sh_quote(remote_root)} "
                 f"bash {self.config_data.gl_sync_remote}/train.sh {sh_quote(zip_file.name)} {sh_quote(run_name)}"
             )
-            result = lib.ssh(self.config_data, remote_cmd, emit=self.emit)
+            result = lib.ssh(self.config_data, remote_cmd, emit=self.emit, input_callback=self.auth_input)
             job_id = parse_job_id(result.stdout)
             lib.append_job(self.config_data, {"type": "train", "task": task, "run_name": run_name, "job_id": job_id})
 
@@ -235,7 +260,12 @@ class PipelineApp(tk.Tk):
             local_dir = lib.ensure_task(self.config_data, task) / "models" / run_name
             local_dir.mkdir(parents=True, exist_ok=True)
             remote_dir = f"{lib.remote_task_dir(self.config_data, task)}/models/{run_name}"
-            lib.sftp_batch(self.config_data, [f"get -r {sftp_quote(remote_dir)} {sftp_quote(local_dir.parent)}"], emit=self.emit)
+            lib.sftp_batch(
+                self.config_data,
+                [f"get -r {sftp_quote(remote_dir)} {sftp_quote(local_dir.parent)}"],
+                emit=self.emit,
+                input_callback=self.auth_input,
+            )
             lib.mark_download(self.config_data, "model", {"task": task, "run_name": run_name, "path": str(local_dir)})
 
         self.run_threaded("Download Model", work)
@@ -257,21 +287,32 @@ class PipelineApp(tk.Tk):
 
         def work() -> None:
             remote_root = lib.remote_task_dir(self.config_data, task)
-            lib.ssh(self.config_data, f"mkdir -p {remote_root}/videos {remote_root}/exports", emit=self.emit)
+            lib.ssh(self.config_data, f"mkdir -p {remote_root}/videos {remote_root}/exports", emit=self.emit, input_callback=self.auth_input)
             for video_name in videos:
                 video = Path(video_name)
                 remote_video = f"{remote_root}/videos/{video.name}"
-                check = lib.ssh(self.config_data, f"test -f {sh_quote(remote_video)} && stat -c %s {sh_quote(remote_video)} || echo missing", emit=self.emit, check=False)
+                check = lib.ssh(
+                    self.config_data,
+                    f"test -f {sh_quote(remote_video)} && stat -c %s {sh_quote(remote_video)} || echo missing",
+                    emit=self.emit,
+                    check=False,
+                    input_callback=self.auth_input,
+                )
                 if str(video.stat().st_size) in check.stdout.split():
                     self.emit(f"skip upload: {video.name} (same size on GL)")
                 else:
-                    lib.sftp_batch(self.config_data, [f"put {sftp_quote(video)} {sftp_quote(remote_video)}"], emit=self.emit)
+                    lib.sftp_batch(
+                        self.config_data,
+                        [f"put {sftp_quote(video)} {sftp_quote(remote_video)}"],
+                        emit=self.emit,
+                        input_callback=self.auth_input,
+                    )
                 remote_cmd = (
                     f"SLEAP_SCRATCH_DIR={sh_quote(remote_root)} "
                     f"bash {self.config_data.gl_sync_remote}/predict.sh --preset {sh_quote(preset)} "
                     f"videos/{sh_quote(video.name)} models/{sh_quote(model)}"
                 )
-                result = lib.ssh(self.config_data, remote_cmd, emit=self.emit)
+                result = lib.ssh(self.config_data, remote_cmd, emit=self.emit, input_callback=self.auth_input)
                 lib.append_job(
                     self.config_data,
                     {
@@ -297,12 +338,22 @@ class PipelineApp(tk.Tk):
             root = lib.ensure_task(self.config_data, task)
             local_exports = root / "exports"
             remote_exports = f"{lib.remote_task_dir(self.config_data, task)}/exports"
-            listing = lib.ssh(self.config_data, f"ls {remote_exports}/*.predicted.slp 2>/dev/null || true", emit=self.emit)
+            listing = lib.ssh(
+                self.config_data,
+                f"ls {remote_exports}/*.predicted.slp 2>/dev/null || true",
+                emit=self.emit,
+                input_callback=self.auth_input,
+            )
             for remote_file in [line.strip() for line in listing.stdout.splitlines() if line.strip().endswith(".slp")]:
                 local_file = local_exports / Path(remote_file).name
                 if local_file.exists():
                     continue
-                lib.sftp_batch(self.config_data, [f"get {sftp_quote(remote_file)} {sftp_quote(local_file)}"], emit=self.emit)
+                lib.sftp_batch(
+                    self.config_data,
+                    [f"get {sftp_quote(remote_file)} {sftp_quote(local_file)}"],
+                    emit=self.emit,
+                    input_callback=self.auth_input,
+                )
                 lib.mark_download(self.config_data, "prediction", {"task": task, "file": local_file.name, "path": str(local_file)})
 
         self.run_threaded("Download Predictions", work)
