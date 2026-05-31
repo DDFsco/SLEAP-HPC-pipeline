@@ -71,6 +71,8 @@ Then click `Save Settings`.
 
 During `Login GL / Bootstrap`, SSH/SFTP may ask for a password, Duo passcode, verification code, or host-key confirmation. The GUI watches the terminal session and opens a popup when one of these prompts appears. Enter the requested value and click OK; the GUI sends it back to the SSH/SFTP process.
 
+After the first successful login, the GUI reuses an OpenSSH ControlMaster connection for 15 minutes. That should avoid repeated password/Duo prompts during the same bootstrap/train/predict sequence.
+
 If Great Lakes rejects the login immediately with `Permission denied (publickey,keyboard-interactive)` and no popup appears, SSH is not offering an interactive prompt to the client. In that case, first confirm that normal Terminal login works:
 
 ```bash

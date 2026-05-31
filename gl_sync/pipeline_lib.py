@@ -128,6 +128,27 @@ def shell_join(parts: Iterable[str]) -> str:
     return " ".join(shlex.quote(str(part)) for part in parts)
 
 
+def safe_control_name(value: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in value)
+
+
+def ssh_control_path(config: PipelineConfig) -> str:
+    user = safe_control_name(config.gl_user or "user")
+    host = safe_control_name(config.gl_host or "host")
+    return f"/tmp/sleap-gl-{user}-{host}-%p"
+
+
+def ssh_multiplex_options(config: PipelineConfig) -> list[str]:
+    return [
+        "-o",
+        "ControlMaster=auto",
+        "-o",
+        "ControlPersist=15m",
+        "-o",
+        f"ControlPath={ssh_control_path(config)}",
+    ]
+
+
 def run_streaming(
     args: list[str],
     emit: Callable[[str], None] | None = None,
@@ -278,9 +299,10 @@ def ssh(
     check: bool = True,
     input_callback: InputCallback | None = None,
 ):
+    args = ["ssh", *ssh_multiplex_options(config), config.ssh_target, remote_command]
     if input_callback:
-        return run_interactive(["ssh", config.ssh_target, remote_command], emit=emit, check=check, input_callback=input_callback)
-    return run_streaming(["ssh", config.ssh_target, remote_command], emit=emit, check=check)
+        return run_interactive(args, emit=emit, check=check, input_callback=input_callback)
+    return run_streaming(args, emit=emit, check=check)
 
 
 def ssh_check(
@@ -308,7 +330,7 @@ def sftp_batch(
         emit("$ sftp " + config.ssh_target)
         batch = "\n".join(commands + ["bye"]) + "\n"
         return run_interactive(
-            ["sftp", config.ssh_target],
+            ["sftp", *ssh_multiplex_options(config), config.ssh_target],
             emit=emit,
             input_callback=input_callback,
             stdin_text=batch,
@@ -316,7 +338,7 @@ def sftp_batch(
         )
     emit("$ sftp -b - " + config.ssh_target)
     proc = subprocess.run(
-        ["sftp", "-b", "-", config.ssh_target],
+        ["sftp", *ssh_multiplex_options(config), "-b", "-", config.ssh_target],
         input="\n".join(commands) + "\n",
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -335,8 +357,14 @@ def remote_home(
     emit: Callable[[str], None] | None = None,
     input_callback: InputCallback | None = None,
 ) -> str:
-    result = ssh(config, 'printf "%s" "$HOME"', emit=emit, input_callback=input_callback)
-    home = result.stdout.strip()
+    start = "__SLEAP_HOME_START__"
+    end = "__SLEAP_HOME_END__"
+    result = ssh(config, f'printf "{start}%s{end}" "$HOME"', emit=emit, input_callback=input_callback)
+    output = result.stdout
+    if start in output and end in output:
+        home = output.split(start, 1)[1].split(end, 1)[0].strip()
+    else:
+        home = ""
     if not home:
         raise RuntimeError("Could not resolve remote $HOME.")
     return home
