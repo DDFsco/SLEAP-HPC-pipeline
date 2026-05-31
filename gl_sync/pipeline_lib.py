@@ -4,6 +4,7 @@ import json
 import os
 import pty
 import select
+import signal
 import shlex
 import subprocess
 import sys
@@ -181,13 +182,18 @@ def run_interactive(
     emit = emit or (lambda line: None)
     emit(f"$ {shell_join(args)}")
 
-    master_fd, slave_fd = pty.openpty()
-    proc = subprocess.Popen(args, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, close_fds=True)
-    os.close(slave_fd)
+    pid, master_fd = pty.fork()
+    if pid == 0:
+        try:
+            os.execvp(args[0], args)
+        except Exception as exc:
+            os.write(2, f"exec failed: {exc}\n".encode())
+            os._exit(127)
 
     output: list[str] = []
     pending = ""
     sent_stdin = False
+    exit_status: int | None = None
 
     try:
         while True:
@@ -216,17 +222,17 @@ def run_interactive(
                         label, secret, default = prompt
                         response = input_callback(label + "\n\n" + pending.strip()[-500:], secret, default)
                         if response is None:
-                            proc.terminate()
+                            try:
+                                os.kill(pid, signal.SIGTERM)
+                            except ProcessLookupError:
+                                pass
                             raise RuntimeError("Authentication input cancelled.")
                         os.write(master_fd, (response + "\n").encode())
                         pending = ""
 
-            if stdin_text is not None and not sent_stdin and not wait_for_prompt and proc.poll() is None:
-                # Used only for commands whose stdin is known to be safe immediately.
-                os.write(master_fd, stdin_text.encode())
-                sent_stdin = True
-
-            if proc.poll() is not None:
+            child_pid, status = os.waitpid(pid, os.WNOHANG)
+            if child_pid:
+                exit_status = status
                 while True:
                     ready, _, _ = select.select([master_fd], [], [], 0)
                     if not ready:
@@ -243,10 +249,22 @@ def run_interactive(
                         if line.strip():
                             emit(line.rstrip())
                 break
+
+            if stdin_text is not None and not sent_stdin and not wait_for_prompt:
+                # Used only for commands whose stdin is known to be safe immediately.
+                os.write(master_fd, stdin_text.encode())
+                sent_stdin = True
     finally:
         os.close(master_fd)
 
-    code = proc.wait()
+    if exit_status is None:
+        _, exit_status = os.waitpid(pid, 0)
+    if os.WIFEXITED(exit_status):
+        code = os.WEXITSTATUS(exit_status)
+    elif os.WIFSIGNALED(exit_status):
+        code = 128 + os.WTERMSIG(exit_status)
+    else:
+        code = 1
     completed = subprocess.CompletedProcess(args, code, "".join(output), "")
     if check and code:
         raise subprocess.CalledProcessError(code, args, completed.stdout, completed.stderr)
