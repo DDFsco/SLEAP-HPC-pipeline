@@ -145,10 +145,17 @@ class PipelineApp(tk.Tk):
             lib.bootstrap_local_dirs(self.config_data)
             if not lib.ssh_check(self.config_data, emit=self.emit):
                 raise RuntimeError("SSH check failed. Configure SSH keys for Great Lakes first.")
+            local_gl_sync = Path(__file__).resolve().parent
+            remote_gl_sync = lib.upload_gl_sync(self.config_data, local_gl_sync, emit=self.emit)
             remote_tasks = f"mkdir -p {lib.remote_task_dir(self.config_data, '_bootstrap_check').rsplit('/', 1)[0]}"
             lib.ssh(self.config_data, remote_tasks, emit=self.emit)
-            self.emit("GL SSH and task root are reachable.")
-            self.emit("Note: remote install checks require gl_sync/install.sh to exist on GL.")
+            check = lib.ssh(self.config_data, f"bash {sh_quote(remote_gl_sync + '/install.sh')} --check", emit=self.emit, check=False)
+            if check.returncode:
+                self.emit("GL install check failed; running remote install.sh.")
+                lib.ssh(self.config_data, f"bash {sh_quote(remote_gl_sync + '/install.sh')}", emit=self.emit)
+            else:
+                self.emit("GL install check passed.")
+            self.emit("GL SSH, gl_sync upload, environment check, and task root are ready.")
 
         self.run_threaded("Login GL", work)
 

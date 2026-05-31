@@ -75,20 +75,37 @@ The GUI expects SSH access to work:
 ssh uniqname@greatlakes.arc-ts.umich.edu echo ok
 ```
 
-It also expects the Great Lakes helper scripts to exist at:
+When you click `Login GL / Bootstrap`, the GUI uploads the local `gl_sync/` directory to:
 
 ```text
-~/gl_sync/install.sh
-~/gl_sync/train.sh
-~/gl_sync/predict.sh
+~/gl_sync/
 ```
 
-The GUI calls:
+Then it runs:
+
+```bash
+bash ~/gl_sync/install.sh --check
+```
+
+If the check fails, it automatically runs:
+
+```bash
+bash ~/gl_sync/install.sh
+```
+
+Training and prediction then call:
 
 ```bash
 SLEAP_SCRATCH_DIR=/scratch/.../tasks/{task} bash ~/gl_sync/train.sh ...
 SLEAP_SCRATCH_DIR=/scratch/.../tasks/{task} bash ~/gl_sync/predict.sh ...
 ```
+
+The scripts uploaded by the GUI are:
+
+- `gl_sync/install.sh`
+- `gl_sync/train.sh`
+- `gl_sync/predict.sh`
+- `gl_sync/sleap_common.sh`
 
 ## Full Workflow
 

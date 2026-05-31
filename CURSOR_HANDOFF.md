@@ -40,14 +40,14 @@ Create these files under `gl_sync/`:
 - `sleap_pipeline_gui.py`
 - `README_LOCAL_GUI.md`
 
-If the old `gl_sync` scripts become readable, preserve and reuse:
+The repository now includes these Great Lakes scripts and the GUI bootstrap uploads them to `~/gl_sync`:
 
 - `install.sh`
 - `train.sh`
 - `predict.sh`
 - `sleap_common.sh`
 
-Do not rewrite those unless there is a specific compatibility issue.
+If the old Desktop copy becomes readable later, compare it against these scripts before replacing anything.
 
 ## Design Constraints
 

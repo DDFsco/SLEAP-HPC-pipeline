@@ -14,6 +14,8 @@ from typing import Callable, Iterable
 GL_HOST_DEFAULT = "greatlakes.arc-ts.umich.edu"
 CONFIG_PATH = Path.home() / ".sleap_pipeline.json"
 LOG_NAME = "pipeline.log.json"
+GL_SYNC_SKIP_DIRS = {"__pycache__", ".git", ".venv", "venv", "tasks"}
+GL_SYNC_SKIP_SUFFIXES = {".pyc", ".pyo"}
 
 
 def utc_now() -> str:
@@ -180,6 +182,76 @@ def sftp_batch(config: PipelineConfig, commands: list[str], emit: Callable[[str]
     if proc.returncode:
         raise subprocess.CalledProcessError(proc.returncode, proc.args, proc.stdout, "")
     return proc
+
+
+def remote_home(config: PipelineConfig, emit: Callable[[str], None] | None = None) -> str:
+    result = ssh(config, 'printf "%s" "$HOME"', emit=emit)
+    home = result.stdout.strip()
+    if not home:
+        raise RuntimeError("Could not resolve remote $HOME.")
+    return home
+
+
+def expand_remote_path(config: PipelineConfig, remote_path: str, emit: Callable[[str], None] | None = None) -> str:
+    if remote_path == "~":
+        return remote_home(config, emit=emit)
+    if remote_path.startswith("~/"):
+        return remote_home(config, emit=emit).rstrip("/") + "/" + remote_path[2:]
+    return remote_path
+
+
+def sftp_quote(value: str | os.PathLike[str]) -> str:
+    text = str(value).replace('"', '\\"')
+    return f'"{text}"'
+
+
+def should_upload(path: Path) -> bool:
+    if any(part in GL_SYNC_SKIP_DIRS for part in path.parts):
+        return False
+    if path.suffix in GL_SYNC_SKIP_SUFFIXES:
+        return False
+    if path.name == ".DS_Store":
+        return False
+    return True
+
+
+def upload_gl_sync(
+    config: PipelineConfig,
+    local_gl_sync: Path,
+    emit: Callable[[str], None] | None = None,
+) -> str:
+    local_gl_sync = local_gl_sync.resolve()
+    if not local_gl_sync.is_dir():
+        raise FileNotFoundError(f"Local gl_sync directory not found: {local_gl_sync}")
+
+    required = ["install.sh", "train.sh", "predict.sh", "sleap_common.sh"]
+    missing = [name for name in required if not (local_gl_sync / name).is_file()]
+    if missing:
+        raise FileNotFoundError("Missing required GL scripts in local gl_sync: " + ", ".join(missing))
+
+    remote_root = expand_remote_path(config, config.gl_sync_remote, emit=emit).rstrip("/")
+    files = [
+        path
+        for path in sorted(local_gl_sync.rglob("*"))
+        if path.is_file() and should_upload(path.relative_to(local_gl_sync))
+    ]
+    dirs = sorted({remote_root + "/" + str(path.parent.relative_to(local_gl_sync)) for path in files if path.parent != local_gl_sync})
+
+    if emit:
+        emit(f"Uploading gl_sync to GL: {local_gl_sync} -> {remote_root}")
+    lib_dirs = " ".join(shlex.quote(path) for path in [remote_root, *dirs])
+    ssh(config, f"mkdir -p {lib_dirs}", emit=emit)
+
+    commands: list[str] = []
+    for path in files:
+        rel = path.relative_to(local_gl_sync)
+        remote_file = remote_root + "/" + rel.as_posix()
+        commands.append(f"put {sftp_quote(path)} {sftp_quote(remote_file)}")
+    sftp_batch(config, commands, emit=emit)
+    ssh(config, f"chmod +x {shlex.quote(remote_root)}/*.sh", emit=emit, check=False)
+    if emit:
+        emit(f"Uploaded {len(files)} gl_sync file(s).")
+    return remote_root
 
 
 def remote_task_dir(config: PipelineConfig, task: str) -> str:
