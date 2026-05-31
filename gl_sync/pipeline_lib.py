@@ -59,6 +59,19 @@ def save_config(config: PipelineConfig, path: Path = CONFIG_PATH) -> None:
     path.write_text(json.dumps(asdict(config), indent=2) + "\n", encoding="utf-8")
 
 
+def default_gl_scratch_dir(gl_user: str) -> str:
+    user = safe_task_name(gl_user)
+    return f"/scratch/gid_root/gid0/{user}/sleap_rat"
+
+
+def ensure_config_defaults(config: PipelineConfig) -> list[str]:
+    updates: list[str] = []
+    if not config.gl_scratch_dir and config.gl_user:
+        config.gl_scratch_dir = default_gl_scratch_dir(config.gl_user)
+        updates.append(f"GL scratch dir defaulted to {config.gl_scratch_dir}")
+    return updates
+
+
 def log_path(config: PipelineConfig) -> Path:
     return config.local_project_path / LOG_NAME
 

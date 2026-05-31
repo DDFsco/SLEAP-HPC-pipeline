@@ -97,6 +97,9 @@ class PipelineApp(tk.Tk):
     def save_settings(self) -> None:
         for key, var in self.vars.items():
             setattr(self.config_data, key, var.get().strip())
+        for message in lib.ensure_config_defaults(self.config_data):
+            self.emit(message)
+        self._load_config_to_ui()
         lib.save_config(self.config_data)
         lib.bootstrap_local_dirs(self.config_data)
         self.emit("Settings saved.")

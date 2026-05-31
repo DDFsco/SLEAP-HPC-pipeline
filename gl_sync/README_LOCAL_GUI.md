@@ -63,11 +63,16 @@ On first launch, open the Settings tab and fill:
 
 - `GL uniqname`
 - `SLURM account`
-- `GL scratch dir`
 - `Local project`
 - `SLEAP command`
 
 Then click `Save Settings`.
+
+If `GL scratch dir` is blank, the GUI defaults it to:
+
+```text
+/scratch/gid_root/gid0/{uniqname}/sleap_rat
+```
 
 During `Login GL / Bootstrap`, SSH/SFTP may ask for a password, Duo passcode, verification code, or host-key confirmation. The GUI watches the terminal session and opens a popup when one of these prompts appears. Enter the requested value and click OK; the GUI sends it back to the SSH/SFTP process.
 
