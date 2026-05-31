@@ -54,6 +54,7 @@ class PipelineApp(tk.Tk):
         buttons = [
             ("Login GL / Bootstrap", self.login_gl),
             ("Show GL Tasks", self.show_gl_tasks),
+            ("Show Slurm Jobs", self.show_slurm_jobs),
             ("Open SLEAP", self.open_sleap),
             ("Train", self.train),
             ("Download Model", self.download_model),
@@ -252,6 +253,26 @@ class PipelineApp(tk.Tk):
             self.after(0, lambda: messagebox.showinfo("Great Lakes Tasks", message))
 
         self.run_threaded("Show GL Tasks", work)
+
+    def show_slurm_jobs(self) -> None:
+        self.save_settings()
+
+        def work() -> None:
+            result = lib.ssh(
+                self.config_data,
+                f"squeue -u {sh_quote(self.config_data.gl_user)} -o '%.18i %.9P %.40j %.8u %.2t %.10M %.6D %R'",
+                emit=self.emit,
+                input_callback=self.auth_input,
+            )
+            lines = [line.rstrip() for line in result.stdout.splitlines() if line.strip()]
+            if lines:
+                message = "Slurm jobs:\n\n" + "\n".join(lines)
+            else:
+                message = "No active Slurm jobs found for this GL user."
+            self.emit(message)
+            self.after(0, lambda: messagebox.showinfo("Slurm Jobs", message))
+
+        self.run_threaded("Show Slurm Jobs", work)
 
     def _ask_task(self, create: bool = True) -> str | None:
         tasks = lib.list_tasks(self.config_data)
