@@ -65,7 +65,7 @@ activate_sleap_env
 if [[ -n "\${SLEAP_PREDICT_CMD_TEMPLATE:-}" ]]; then
   eval "\${SLEAP_PREDICT_CMD_TEMPLATE}"
 else
-  sleap predict "${MODEL_PATH}" "${VIDEO_PATH}" -o "${OUT_PATH}"
+  sleap track --data_path "${VIDEO_PATH}" --model_paths "${MODEL_PATH}" --output_path "${OUT_PATH}"
 fi
 EOF
 

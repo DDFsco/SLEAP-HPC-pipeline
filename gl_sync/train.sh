@@ -17,6 +17,7 @@ WORK="$(resolve_work)"
 ensure_work_dirs
 
 ZIP_PATH="$WORK/training_package/$ZIP_NAME"
+PACKAGE_DIR="$WORK/jobs/train_${RUN_NAME}_package"
 MODEL_DIR="$WORK/models/$RUN_NAME"
 JOB_DIR="$WORK/jobs"
 LOG_DIR="$WORK/logs"
@@ -28,6 +29,15 @@ if [[ ! -f "$ZIP_PATH" ]]; then
 fi
 
 mkdir -p "$MODEL_DIR" "$JOB_DIR" "$LOG_DIR"
+rm -rf "$PACKAGE_DIR"
+mkdir -p "$PACKAGE_DIR"
+unzip -q "$ZIP_PATH" -d "$PACKAGE_DIR"
+
+CONFIG_NAME="$(find "$PACKAGE_DIR" -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.yml' \) ! -name 'jobs.yaml' -exec basename {} \; | head -n 1)"
+if [[ -z "$CONFIG_NAME" ]]; then
+  echo "No training config YAML found in: $ZIP_PATH" >&2
+  exit 1
+fi
 
 cat > "$JOB_FILE" <<EOF
 #!/usr/bin/env bash
@@ -48,11 +58,12 @@ source "${SCRIPT_DIR}/sleap_common.sh"
 maybe_load_python_module
 activate_sleap_env
 mkdir -p "${MODEL_DIR}"
+cd "${PACKAGE_DIR}"
 
 if [[ -n "\${SLEAP_TRAIN_CMD_TEMPLATE:-}" ]]; then
   eval "\${SLEAP_TRAIN_CMD_TEMPLATE}"
 else
-  sleap train "${ZIP_PATH}" --output "${MODEL_DIR}"
+  sleap train --config-name "${CONFIG_NAME}" --config-dir "${PACKAGE_DIR}" trainer_config.ckpt_dir="${WORK}/models" trainer_config.run_name="${RUN_NAME}"
 fi
 EOF
 
