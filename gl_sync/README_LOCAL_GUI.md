@@ -78,6 +78,12 @@ During `Login GL / Bootstrap`, SSH/SFTP may ask for a password, Duo passcode, ve
 
 After the first successful login, the GUI reuses an OpenSSH ControlMaster connection for 15 minutes. That should avoid repeated password/Duo prompts during the same bootstrap/train/predict sequence.
 
+Use `Show GL Tasks` to list remote task folders stored under:
+
+```text
+{GL scratch dir}/tasks/
+```
+
 If Great Lakes rejects the login immediately with `Permission denied (publickey,keyboard-interactive)` and no popup appears, SSH is not offering an interactive prompt to the client. In that case, first confirm that normal Terminal login works:
 
 ```bash

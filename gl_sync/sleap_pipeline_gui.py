@@ -53,6 +53,7 @@ class PipelineApp(tk.Tk):
         self.pipeline_tab.columnconfigure(0, weight=1)
         buttons = [
             ("Login GL / Bootstrap", self.login_gl),
+            ("Show GL Tasks", self.show_gl_tasks),
             ("Open SLEAP", self.open_sleap),
             ("Train", self.train),
             ("Download Model", self.download_model),
@@ -61,6 +62,13 @@ class PipelineApp(tk.Tk):
         ]
         for row, (label, command) in enumerate(buttons):
             ttk.Button(self.pipeline_tab, text=label, command=command).grid(row=row, column=0, sticky="ew", pady=6)
+        hint = (
+            "Great Lakes tasks are stored under: "
+            "{GL scratch dir}/tasks/{task}. Use Show GL Tasks to list the remote task folders."
+        )
+        ttk.Label(self.pipeline_tab, text=hint, wraplength=840, foreground="#555").grid(
+            row=len(buttons), column=0, sticky="ew", pady=(14, 0)
+        )
 
     def _build_history_tab(self) -> None:
         self.history_tab.rowconfigure(0, weight=1)
@@ -223,6 +231,27 @@ class PipelineApp(tk.Tk):
             self.emit("GL SSH, gl_sync upload, environment check, and task root are ready.")
 
         self.run_threaded("Login GL", work)
+
+    def show_gl_tasks(self) -> None:
+        self.save_settings()
+
+        def work() -> None:
+            tasks_root = f"{self.config_data.gl_scratch_dir.rstrip('/')}/tasks"
+            result = lib.ssh(
+                self.config_data,
+                f"find {sh_quote(tasks_root)} -mindepth 1 -maxdepth 1 -type d -printf '%f\\n' 2>/dev/null | sort || true",
+                emit=self.emit,
+                input_callback=self.auth_input,
+            )
+            tasks = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+            if tasks:
+                message = "GL tasks:\n\n" + "\n".join(tasks)
+            else:
+                message = f"No GL task folders found under:\n{tasks_root}"
+            self.emit(message)
+            self.after(0, lambda: messagebox.showinfo("Great Lakes Tasks", message))
+
+        self.run_threaded("Show GL Tasks", work)
 
     def _ask_task(self, create: bool = True) -> str | None:
         tasks = lib.list_tasks(self.config_data)
