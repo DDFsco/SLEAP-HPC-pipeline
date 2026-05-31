@@ -388,12 +388,10 @@ class PipelineApp(tk.Tk):
 
     def download_model(self) -> None:
         self.save_settings()
-        task = self._ask_task(create=False)
-        if not task:
+        selection = ModelSelectionDialog(self, self.config_data, title="Select Model to Download").show()
+        if selection is None:
             return
-        run_name = simpledialog.askstring("Model", "Model/run name", parent=self)
-        if not run_name:
-            return
+        task, run_name = selection
 
         def work() -> None:
             local_dir = lib.ensure_task(self.config_data, task) / "models" / run_name
@@ -412,12 +410,10 @@ class PipelineApp(tk.Tk):
 
     def predict(self) -> None:
         self.save_settings()
-        task = self._ask_task(create=True)
-        if not task:
+        selection = ModelSelectionDialog(self, self.config_data, title="Select Model for Prediction").show()
+        if selection is None:
             return
-        model = simpledialog.askstring("Model", "Model directory name", parent=self)
-        if not model:
-            return
+        task, model = selection
         videos = filedialog.askopenfilenames(title="Select videos")
         if not videos:
             return
@@ -587,6 +583,104 @@ class TrainingPackageDialog:
             messagebox.showerror("Train", "Select a training package.", parent=self.window)
             return
         self.result = (task, zip_file, run_name)
+        self.window.destroy()
+
+
+class ModelSelectionDialog:
+    def __init__(self, parent: PipelineApp, config: lib.PipelineConfig, title: str) -> None:
+        self.parent = parent
+        self.config = config
+        self.title = title
+        self.result: tuple[str, str] | None = None
+        self.window: tk.Toplevel | None = None
+        self.task_var = tk.StringVar()
+        self.model_var = tk.StringVar()
+        self.detail_var = tk.StringVar()
+        self.model_combo: ttk.Combobox | None = None
+        self.refs_by_task = self._load_refs()
+
+    def _load_refs(self) -> dict[str, list[dict]]:
+        refs_by_task: dict[str, list[dict]] = {}
+        for ref in lib.list_model_refs(self.config):
+            refs_by_task.setdefault(ref["task"], []).append(ref)
+        return refs_by_task
+
+    def show(self) -> tuple[str, str] | None:
+        if not self.refs_by_task:
+            messagebox.showwarning(
+                self.title,
+                "No model runs found. Submit a training job first, or download a model into tasks/{task}/models/.",
+                parent=self.parent,
+            )
+            return None
+
+        self.window = tk.Toplevel(self.parent)
+        self.window.title(self.title)
+        self.window.transient(self.parent)
+        self.window.grab_set()
+        self.window.columnconfigure(1, weight=1)
+
+        ttk.Label(self.window, text="Task").grid(row=0, column=0, sticky="w", padx=12, pady=(12, 6))
+        task_combo = ttk.Combobox(self.window, textvariable=self.task_var, values=list(self.refs_by_task), state="readonly")
+        task_combo.grid(row=0, column=1, sticky="ew", padx=12, pady=(12, 6))
+
+        ttk.Label(self.window, text="Model / run").grid(row=1, column=0, sticky="w", padx=12, pady=6)
+        self.model_combo = ttk.Combobox(self.window, textvariable=self.model_var, state="readonly")
+        self.model_combo.grid(row=1, column=1, sticky="ew", padx=12, pady=6)
+
+        ttk.Label(self.window, textvariable=self.detail_var, wraplength=520, foreground="#555").grid(
+            row=2, column=0, columnspan=2, sticky="ew", padx=12, pady=6
+        )
+
+        button_row = ttk.Frame(self.window)
+        button_row.grid(row=3, column=0, columnspan=2, sticky="e", padx=12, pady=(8, 12))
+        ttk.Button(button_row, text="Cancel", command=self.window.destroy).grid(row=0, column=0, padx=(0, 6))
+        ttk.Button(button_row, text="Select", command=self._confirm).grid(row=0, column=1)
+
+        task_combo.bind("<<ComboboxSelected>>", lambda _event: self._sync_models())
+        self.model_combo.bind("<<ComboboxSelected>>", lambda _event: self._sync_detail())
+        first_task = next(iter(self.refs_by_task))
+        self.task_var.set(first_task)
+        self._sync_models()
+
+        self.window.wait_window()
+        return self.result
+
+    def _sync_models(self) -> None:
+        if self.model_combo is None:
+            return
+        refs = self.refs_by_task.get(self.task_var.get(), [])
+        self.model_combo.configure(values=[ref["model"] for ref in refs])
+        self.model_var.set(refs[0]["model"] if refs else "")
+        self._sync_detail()
+
+    def _sync_detail(self) -> None:
+        ref = self._selected_ref()
+        if not ref:
+            self.detail_var.set("")
+            return
+        parts = [f"Source: {ref.get('source', '')}"]
+        if ref.get("time"):
+            parts.append(f"Time: {ref['time']}")
+        if ref.get("job_id"):
+            parts.append(f"Job ID: {ref['job_id']}")
+        if ref.get("path"):
+            parts.append(f"Path: {ref['path']}")
+        self.detail_var.set(" | ".join(parts))
+
+    def _selected_ref(self) -> dict | None:
+        task = self.task_var.get()
+        model = self.model_var.get()
+        return next((ref for ref in self.refs_by_task.get(task, []) if ref["model"] == model), None)
+
+    def _confirm(self) -> None:
+        if self.window is None:
+            return
+        ref = self._selected_ref()
+        if not ref:
+            messagebox.showerror(self.title, "Select a model/run.", parent=self.window)
+            return
+        self.result = (lib.safe_task_name(ref["task"]), lib.safe_task_name(ref["model"]))
         self.window.destroy()
 
 

@@ -137,6 +137,64 @@ def list_training_zips(config: PipelineConfig, task: str | None = None) -> list[
     return zips
 
 
+def list_model_refs(config: PipelineConfig, task: str | None = None) -> list[dict]:
+    refs: dict[tuple[str, str], dict] = {}
+    try:
+        log = load_pipeline_log(config)
+    except Exception:
+        log = {"jobs": [], "downloaded_models": []}
+
+    for job in log.get("jobs", []):
+        if job.get("type") != "train" or not job.get("task") or not job.get("run_name"):
+            continue
+        if task and safe_task_name(job["task"]) != safe_task_name(task):
+            continue
+        key = (safe_task_name(job["task"]), safe_task_name(job["run_name"]))
+        refs[key] = {
+            "task": key[0],
+            "model": key[1],
+            "source": "training history",
+            "time": job.get("submitted_at", ""),
+            "job_id": job.get("job_id", ""),
+        }
+
+    for record in log.get("downloaded_models", []):
+        if not record.get("task") or not record.get("run_name"):
+            continue
+        if task and safe_task_name(record["task"]) != safe_task_name(task):
+            continue
+        key = (safe_task_name(record["task"]), safe_task_name(record["run_name"]))
+        refs[key] = {
+            **refs.get(key, {}),
+            "task": key[0],
+            "model": key[1],
+            "source": "downloaded model",
+            "time": record.get("downloaded_at", refs.get(key, {}).get("time", "")),
+            "path": record.get("path", ""),
+            "job_id": refs.get(key, {}).get("job_id", ""),
+        }
+
+    for task_name in list_tasks(config):
+        if task and safe_task_name(task_name) != safe_task_name(task):
+            continue
+        models_dir = task_root(config, task_name) / "models"
+        if not models_dir.exists():
+            continue
+        for model_dir in sorted((path for path in models_dir.iterdir() if path.is_dir()), key=lambda p: p.stat().st_mtime, reverse=True):
+            key = (safe_task_name(task_name), safe_task_name(model_dir.name))
+            refs[key] = {
+                **refs.get(key, {}),
+                "task": key[0],
+                "model": key[1],
+                "source": "local model folder",
+                "time": refs.get(key, {}).get("time", datetime.fromtimestamp(model_dir.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")),
+                "path": str(model_dir),
+                "job_id": refs.get(key, {}).get("job_id", ""),
+            }
+
+    return sorted(refs.values(), key=lambda ref: ref.get("time", ""), reverse=True)
+
+
 def shell_join(parts: Iterable[str]) -> str:
     return " ".join(shlex.quote(str(part)) for part in parts)
 

@@ -167,7 +167,7 @@ tasks/{task}/training_package/
 
 6. Click `Train`, select a task and training package zip from the popup, and confirm the generated run name.
 7. Wait for the Great Lakes Slurm job to finish.
-8. Click `Download Model` and enter the run name.
+8. Click `Download Model` and select the trained model/run from the popup.
 9. Click `Predict`, select videos, model, and preset.
 10. Wait for prediction jobs to finish.
 11. Click `Download Predictions`.
@@ -177,5 +177,6 @@ tasks/{task}/training_package/
 - The GUI writes configuration to `~/.sleap_pipeline.json`.
 - Job and download history is stored in `{local_project}/pipeline.log.json`.
 - The `History` tab records submitted training/prediction jobs, run names, package/video names, job IDs, and downloaded files for later model download or prediction reference.
+- `Download Model` and `Predict` show model selection popups populated from training history and local `tasks/{task}/models/` folders, so users do not need to remember run names.
 - Video upload de-dupe compares remote file size before skipping an upload.
 - This first version does not automatically poll Slurm job completion.
