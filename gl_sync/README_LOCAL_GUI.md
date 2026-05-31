@@ -67,6 +67,26 @@ powershell -ExecutionPolicy Bypass -File run_gui.ps1
 
 The launcher first uses `~/sleap_gui_env` if it exists. Otherwise it searches for Python 3.11+ on `PATH`.
 
+## Build a Windows EXE
+
+On a Windows machine, run this from the repository root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File build_windows_exe.ps1
+```
+
+The double-clickable GUI app will be created at:
+
+```text
+dist\SLEAP-Pipeline-Manager.exe
+```
+
+The exe bundles the pipeline GUI and `gl_sync` scripts. It does not bundle SLEAP itself; install the local SLEAP GUI environment separately with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File gl_sync/install_local_gui.ps1
+```
+
 On first launch, open the Settings tab and fill:
 
 - `GL uniqname`

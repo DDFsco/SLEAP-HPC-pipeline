@@ -4,6 +4,10 @@ __pycache__/
 .venv/
 venv/
 sleap_gui_env/
+.build_venv/
+build/
+dist/
+*.spec
 tasks/
 pipeline.log.json
 .sleap_pipeline.json

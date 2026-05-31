@@ -18,3 +18,15 @@ On Windows PowerShell:
 ```powershell
 powershell -ExecutionPolicy Bypass -File run_gui.ps1
 ```
+
+Build a double-clickable Windows exe on a Windows machine with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File build_windows_exe.ps1
+```
+
+The exe will be written to:
+
+```text
+dist\SLEAP-Pipeline-Manager.exe
+```
