@@ -5,6 +5,7 @@ import queue
 import subprocess
 import threading
 import tkinter as tk
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
@@ -20,6 +21,7 @@ class PipelineApp(tk.Tk):
         self.log_queue: queue.Queue[str] = queue.Queue()
         self._build()
         self._load_config_to_ui()
+        self.refresh_history()
         self.after(100, self._drain_log_queue)
 
     def _build(self) -> None:
@@ -30,14 +32,17 @@ class PipelineApp(tk.Tk):
         notebook.grid(row=0, column=0, sticky="nsew")
 
         self.pipeline_tab = ttk.Frame(notebook, padding=12)
+        self.history_tab = ttk.Frame(notebook, padding=12)
         self.settings_tab = ttk.Frame(notebook, padding=12)
         self.log_tab = ttk.Frame(notebook, padding=12)
 
         notebook.add(self.pipeline_tab, text="Pipeline")
+        notebook.add(self.history_tab, text="History")
         notebook.add(self.settings_tab, text="Settings")
         notebook.add(self.log_tab, text="Logs")
 
         self._build_pipeline_tab()
+        self._build_history_tab()
         self._build_settings_tab()
         self._build_log_tab()
 
@@ -56,6 +61,38 @@ class PipelineApp(tk.Tk):
         ]
         for row, (label, command) in enumerate(buttons):
             ttk.Button(self.pipeline_tab, text=label, command=command).grid(row=row, column=0, sticky="ew", pady=6)
+
+    def _build_history_tab(self) -> None:
+        self.history_tab.rowconfigure(0, weight=1)
+        self.history_tab.columnconfigure(0, weight=1)
+        columns = ("time", "type", "task", "run", "package", "job_id", "status")
+        self.history_tree = ttk.Treeview(self.history_tab, columns=columns, show="headings", height=18)
+        headings = {
+            "time": "Submitted / Downloaded",
+            "type": "Type",
+            "task": "Task",
+            "run": "Run / Model",
+            "package": "Package / File",
+            "job_id": "Job ID",
+            "status": "Status",
+        }
+        widths = {
+            "time": 160,
+            "type": 90,
+            "task": 140,
+            "run": 180,
+            "package": 260,
+            "job_id": 90,
+            "status": 90,
+        }
+        for column in columns:
+            self.history_tree.heading(column, text=headings[column])
+            self.history_tree.column(column, width=widths[column], anchor="w")
+        self.history_tree.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(self.history_tab, command=self.history_tree.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.history_tree.configure(yscrollcommand=scrollbar.set)
+        ttk.Button(self.history_tab, text="Refresh", command=self.refresh_history).grid(row=1, column=0, sticky="e", pady=(10, 0))
 
     def _build_settings_tab(self) -> None:
         self.settings_tab.columnconfigure(1, weight=1)
@@ -102,6 +139,7 @@ class PipelineApp(tk.Tk):
         self._load_config_to_ui()
         lib.save_config(self.config_data)
         lib.bootstrap_local_dirs(self.config_data)
+        self.refresh_history()
         self.emit("Settings saved.")
         self.status.set("Settings saved")
 
@@ -197,6 +235,55 @@ class PipelineApp(tk.Tk):
         self.emit(f"Task: {root}")
         return lib.safe_task_name(task)
 
+    def refresh_history(self) -> None:
+        if not hasattr(self, "history_tree"):
+            return
+        for item in self.history_tree.get_children():
+            self.history_tree.delete(item)
+        try:
+            data = lib.load_pipeline_log(self.config_data)
+        except Exception:
+            return
+        rows: list[tuple[str, str, str, str, str, str, str]] = []
+        for job in data.get("jobs", []):
+            rows.append(
+                (
+                    job.get("submitted_at", ""),
+                    job.get("type", ""),
+                    job.get("task", ""),
+                    job.get("run_name") or job.get("model", ""),
+                    job.get("training_package") or job.get("video", ""),
+                    job.get("job_id", ""),
+                    job.get("status", ""),
+                )
+            )
+        for record in data.get("downloaded_models", []):
+            rows.append(
+                (
+                    record.get("downloaded_at", ""),
+                    "model download",
+                    record.get("task", ""),
+                    record.get("run_name", ""),
+                    Path(record.get("path", "")).name,
+                    "",
+                    "downloaded",
+                )
+            )
+        for record in data.get("downloaded_predictions", []):
+            rows.append(
+                (
+                    record.get("downloaded_at", ""),
+                    "prediction download",
+                    record.get("task", ""),
+                    "",
+                    record.get("file", ""),
+                    "",
+                    "downloaded",
+                )
+            )
+        for row in sorted(rows, key=lambda item: item[0], reverse=True):
+            self.history_tree.insert("", "end", values=row)
+
     def open_sleap(self) -> None:
         self.save_settings()
         task = self._ask_task(create=True)
@@ -214,22 +301,10 @@ class PipelineApp(tk.Tk):
 
     def train(self) -> None:
         self.save_settings()
-        zips = lib.list_training_zips(self.config_data)
-        if not zips:
-            messagebox.showwarning("Train", "No training zip found under tasks/*/training_package/.")
+        selection = TrainingPackageDialog(self, self.config_data).show()
+        if selection is None:
             return
-        zip_path = filedialog.askopenfilename(
-            title="Select training package",
-            initialdir=str(zips[0].parent),
-            filetypes=[("Training package", "*.zip"), ("All files", "*.*")],
-        )
-        if not zip_path:
-            return
-        zip_file = Path(zip_path)
-        task = zip_file.parents[1].name
-        run_name = simpledialog.askstring("Run name", "Run name", initialvalue=f"{task}_v001", parent=self)
-        if not run_name:
-            return
+        task, zip_file, run_name = selection
 
         def work() -> None:
             remote_root = lib.remote_task_dir(self.config_data, task)
@@ -246,7 +321,18 @@ class PipelineApp(tk.Tk):
             )
             result = lib.ssh(self.config_data, remote_cmd, emit=self.emit, input_callback=self.auth_input)
             job_id = parse_job_id(result.stdout)
-            lib.append_job(self.config_data, {"type": "train", "task": task, "run_name": run_name, "job_id": job_id})
+            lib.append_job(
+                self.config_data,
+                {
+                    "type": "train",
+                    "task": task,
+                    "run_name": run_name,
+                    "training_package": zip_file.name,
+                    "training_package_path": str(zip_file),
+                    "job_id": job_id,
+                },
+            )
+            self.after(0, self.refresh_history)
 
         self.run_threaded("Train", work)
 
@@ -270,6 +356,7 @@ class PipelineApp(tk.Tk):
                 input_callback=self.auth_input,
             )
             lib.mark_download(self.config_data, "model", {"task": task, "run_name": run_name, "path": str(local_dir)})
+            self.after(0, self.refresh_history)
 
         self.run_threaded("Download Model", work)
 
@@ -328,6 +415,7 @@ class PipelineApp(tk.Tk):
                         "expected_output": f"exports/{video.stem}.predicted.slp",
                     },
                 )
+            self.after(0, self.refresh_history)
 
         self.run_threaded("Predict", work)
 
@@ -358,8 +446,98 @@ class PipelineApp(tk.Tk):
                     input_callback=self.auth_input,
                 )
                 lib.mark_download(self.config_data, "prediction", {"task": task, "file": local_file.name, "path": str(local_file)})
+            self.after(0, self.refresh_history)
 
         self.run_threaded("Download Predictions", work)
+
+
+class TrainingPackageDialog:
+    def __init__(self, parent: PipelineApp, config: lib.PipelineConfig) -> None:
+        self.parent = parent
+        self.config = config
+        self.result: tuple[str, Path, str] | None = None
+        self.window: tk.Toplevel | None = None
+        self.task_var = tk.StringVar()
+        self.package_var = tk.StringVar()
+        self.run_var = tk.StringVar()
+        self.package_combo: ttk.Combobox | None = None
+        self.packages_by_task = self._load_packages()
+
+    def _load_packages(self) -> dict[str, list[Path]]:
+        packages: dict[str, list[Path]] = {}
+        for task in lib.list_tasks(self.config):
+            zips = lib.list_training_zips(self.config, task)
+            if zips:
+                packages[task] = zips
+        return packages
+
+    def show(self) -> tuple[str, Path, str] | None:
+        if not self.packages_by_task:
+            messagebox.showwarning("Train", "No training zip found under tasks/*/training_package/.", parent=self.parent)
+            return None
+
+        self.window = tk.Toplevel(self.parent)
+        self.window.title("Select Training Package")
+        self.window.transient(self.parent)
+        self.window.grab_set()
+        self.window.columnconfigure(1, weight=1)
+
+        ttk.Label(self.window, text="Task").grid(row=0, column=0, sticky="w", padx=12, pady=(12, 6))
+        task_combo = ttk.Combobox(self.window, textvariable=self.task_var, values=list(self.packages_by_task), state="readonly")
+        task_combo.grid(row=0, column=1, sticky="ew", padx=12, pady=(12, 6))
+
+        ttk.Label(self.window, text="Training package").grid(row=1, column=0, sticky="w", padx=12, pady=6)
+        self.package_combo = ttk.Combobox(self.window, textvariable=self.package_var, state="readonly")
+        self.package_combo.grid(row=1, column=1, sticky="ew", padx=12, pady=6)
+
+        ttk.Label(self.window, text="Run name").grid(row=2, column=0, sticky="w", padx=12, pady=6)
+        ttk.Entry(self.window, textvariable=self.run_var).grid(row=2, column=1, sticky="ew", padx=12, pady=6)
+
+        button_row = ttk.Frame(self.window)
+        button_row.grid(row=3, column=0, columnspan=2, sticky="e", padx=12, pady=(8, 12))
+        ttk.Button(button_row, text="Cancel", command=self.window.destroy).grid(row=0, column=0, padx=(0, 6))
+        ttk.Button(button_row, text="Train", command=self._confirm).grid(row=0, column=1)
+
+        task_combo.bind("<<ComboboxSelected>>", lambda _event: self._sync_packages())
+        self.package_combo.bind("<<ComboboxSelected>>", lambda _event: self._sync_run_name())
+        first_task = next(iter(self.packages_by_task))
+        self.task_var.set(first_task)
+        self._sync_packages()
+
+        self.window.wait_window()
+        return self.result
+
+    def _sync_packages(self) -> None:
+        if self.window is None:
+            return
+        task = self.task_var.get()
+        package_names = [path.name for path in self.packages_by_task.get(task, [])]
+        if self.package_combo is None:
+            return
+        self.package_combo.configure(values=package_names)
+        if package_names:
+            self.package_var.set(package_names[0])
+        else:
+            self.package_var.set("")
+        self._sync_run_name()
+
+    def _sync_run_name(self) -> None:
+        task = lib.safe_task_name(self.task_var.get())
+        timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
+        self.run_var.set(f"{task}_{timestamp}")
+
+    def _confirm(self) -> None:
+        if self.window is None:
+            return
+        task = lib.safe_task_name(self.task_var.get())
+        package_name = self.package_var.get()
+        run_name = lib.safe_task_name(self.run_var.get())
+        zip_file = next((path for path in self.packages_by_task.get(task, []) if path.name == package_name), None)
+        if zip_file is None:
+            messagebox.showerror("Train", "Select a training package.", parent=self.window)
+            return
+        self.result = (task, zip_file, run_name)
+        self.window.destroy()
 
 
 def parse_job_id(output: str) -> str:

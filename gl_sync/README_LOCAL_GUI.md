@@ -144,7 +144,7 @@ The scripts uploaded by the GUI are:
 tasks/{task}/training_package/
 ```
 
-6. Click `Train`, select the zip, and enter a run name.
+6. Click `Train`, select a task and training package zip from the popup, and confirm the generated run name.
 7. Wait for the Great Lakes Slurm job to finish.
 8. Click `Download Model` and enter the run name.
 9. Click `Predict`, select videos, model, and preset.
@@ -155,5 +155,6 @@ tasks/{task}/training_package/
 
 - The GUI writes configuration to `~/.sleap_pipeline.json`.
 - Job and download history is stored in `{local_project}/pipeline.log.json`.
+- The `History` tab records submitted training/prediction jobs, run names, package/video names, job IDs, and downloaded files for later model download or prediction reference.
 - Video upload de-dupe compares remote file size before skipping an upload.
 - This first version does not automatically poll Slurm job completion.
