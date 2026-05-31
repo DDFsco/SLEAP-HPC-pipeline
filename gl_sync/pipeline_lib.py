@@ -34,7 +34,7 @@ class PipelineConfig:
     gl_scratch_dir: str = ""
     local_project: str = str(Path.home() / "sleap_project")
     sleap_label_cmd: str = ""
-    default_preset: str = "single_rat_sensitive"
+    default_preset: str = "default"
     gl_sync_remote: str = "~/gl_sync"
 
     @property

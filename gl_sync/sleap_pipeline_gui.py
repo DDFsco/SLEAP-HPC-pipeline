@@ -18,6 +18,7 @@ DARK = "#2c3e50"
 MUTED = "#6b7280"
 BUTTON_BG = "#34495e"
 LOG_MAX_LINES = 1000
+PRESET_OPTIONS = ("default", "aggressive", "sensitive")
 
 STEP_DEFS = [
     ("1", "Label Videos", "Open SLEAP locally, label frames, then export a Training Job Package zip into the task folder.", "Open SLEAP"),
@@ -259,7 +260,10 @@ class PipelineApp(tk.Tk):
             ttk.Label(self.settings_tab, text=label).grid(row=row, column=0, sticky="w", pady=4)
             var = tk.StringVar()
             self.vars[key] = var
-            ttk.Entry(self.settings_tab, textvariable=var).grid(row=row, column=1, sticky="ew", pady=4)
+            if key == "default_preset":
+                ttk.Combobox(self.settings_tab, textvariable=var, values=PRESET_OPTIONS, state="readonly").grid(row=row, column=1, sticky="ew", pady=4)
+            else:
+                ttk.Entry(self.settings_tab, textvariable=var).grid(row=row, column=1, sticky="ew", pady=4)
             if key == "local_project":
                 ttk.Button(self.settings_tab, text="Browse", command=self._browse_local_project).grid(row=row, column=2, padx=6)
             elif key == "sleap_label_cmd":
@@ -276,12 +280,16 @@ class PipelineApp(tk.Tk):
         self.log_text.configure(yscrollcommand=scrollbar.set)
 
     def _load_config_to_ui(self) -> None:
+        if self.config_data.default_preset not in PRESET_OPTIONS:
+            self.config_data.default_preset = "default"
         for key, var in self.vars.items():
             var.set(str(getattr(self.config_data, key)))
 
     def save_settings(self) -> None:
         for key, var in self.vars.items():
             setattr(self.config_data, key, var.get().strip())
+        if self.config_data.default_preset not in PRESET_OPTIONS:
+            self.config_data.default_preset = "default"
         for message in lib.ensure_config_defaults(self.config_data):
             self.emit(message)
         self._load_config_to_ui()
@@ -578,9 +586,12 @@ class PipelineApp(tk.Tk):
         videos = filedialog.askopenfilenames(title="Select videos")
         if not videos:
             return
-        preset = simpledialog.askstring("Preset", "Preset", initialvalue=self.config_data.default_preset, parent=self)
+        preset = PresetSelectionDialog(self, self.config_data.default_preset).show()
         if not preset:
             return
+        self.config_data.default_preset = preset
+        self.vars["default_preset"].set(preset)
+        lib.save_config(self.config_data)
 
         def work() -> None:
             remote_root = lib.remote_task_dir(self.config_data, task)
@@ -651,6 +662,44 @@ class PipelineApp(tk.Tk):
             self.after(0, self.refresh_history)
 
         self.run_threaded("Download Predictions", work)
+
+
+class PresetSelectionDialog:
+    def __init__(self, parent: PipelineApp, initial: str) -> None:
+        self.parent = parent
+        self.result: str | None = None
+        self.window: tk.Toplevel | None = None
+        self.preset_var = tk.StringVar(value=initial if initial in PRESET_OPTIONS else "default")
+
+    def show(self) -> str | None:
+        self.window = tk.Toplevel(self.parent)
+        self.window.title("Select Predict Config")
+        self.window.transient(self.parent)
+        self.window.grab_set()
+        self.window.columnconfigure(1, weight=1)
+
+        ttk.Label(self.window, text="Predict config").grid(row=0, column=0, sticky="w", padx=12, pady=(12, 6))
+        combo = ttk.Combobox(self.window, textvariable=self.preset_var, values=PRESET_OPTIONS, state="readonly")
+        combo.grid(row=0, column=1, sticky="ew", padx=12, pady=(12, 6))
+
+        button_row = ttk.Frame(self.window)
+        button_row.grid(row=1, column=0, columnspan=2, sticky="e", padx=12, pady=(8, 12))
+        ttk.Button(button_row, text="Cancel", command=self.window.destroy).grid(row=0, column=0, padx=(0, 6))
+        ttk.Button(button_row, text="Select", command=self._confirm).grid(row=0, column=1)
+
+        combo.focus_set()
+        self.window.wait_window()
+        return self.result
+
+    def _confirm(self) -> None:
+        if self.window is None:
+            return
+        preset = self.preset_var.get()
+        if preset not in PRESET_OPTIONS:
+            messagebox.showerror("Predict Config", "Select a predict config.", parent=self.window)
+            return
+        self.result = preset
+        self.window.destroy()
 
 
 class TrainingPackageDialog:
