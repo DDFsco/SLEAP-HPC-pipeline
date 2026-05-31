@@ -12,13 +12,43 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 import pipeline_lib as lib
 
 
+BG = "#f5f6fa"
+WHITE = "#ffffff"
+DARK = "#2c3e50"
+MUTED = "#6b7280"
+BLUE = "#3498db"
+PURPLE = "#8e44ad"
+ORANGE = "#e67e22"
+GREEN = "#27ae60"
+RED = "#e74c3c"
+YELLOW = "#f39c12"
+LIGHT_BG = "#ecf0f1"
+
+STEP_DEFS = [
+    ("1", "Label Videos", "Open SLEAP locally, label frames, then export a Training Job Package zip into the task folder.", BLUE, "Open SLEAP"),
+    ("2", "Train Model", "Select a task training package, upload it to Great Lakes, and submit a GPU Slurm training job.", PURPLE, "Train"),
+    ("3", "Run Inference", "Select a trained model and video files, upload videos, and submit prediction jobs on Great Lakes.", ORANGE, "Predict"),
+    ("4", "Download Results", "Download trained models or prediction files from Great Lakes back into the local task folders.", GREEN, "Download"),
+    ("5", "Review / Correct", "Open downloaded predictions in SLEAP, correct labels, export a new package, and repeat training if needed.", RED, "Review"),
+]
+
+STEP_BY_THREAD_LABEL = {
+    "Train": "2",
+    "Predict": "3",
+    "Download Model": "4",
+    "Download Predictions": "4",
+}
+
+
 class PipelineApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("SLEAP Great Lakes Pipeline")
-        self.geometry("980x680")
+        self.title("SLEAP Pipeline Manager - UM Great Lakes")
+        self.geometry("1040x760")
+        self.configure(bg=BG)
         self.config_data = lib.load_config()
         self.log_queue: queue.Queue[str] = queue.Queue()
+        self.step_labels: dict[str, tk.Label] = {}
         self._build()
         self._load_config_to_ui()
         self.refresh_history()
@@ -26,20 +56,22 @@ class PipelineApp(tk.Tk):
 
     def _build(self) -> None:
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+
+        self._build_header()
 
         notebook = ttk.Notebook(self)
-        notebook.grid(row=0, column=0, sticky="nsew")
+        notebook.grid(row=1, column=0, sticky="nsew", padx=12, pady=(8, 6))
 
-        self.pipeline_tab = ttk.Frame(notebook, padding=12)
+        self.pipeline_tab = tk.Frame(notebook, bg=BG)
         self.history_tab = ttk.Frame(notebook, padding=12)
         self.settings_tab = ttk.Frame(notebook, padding=12)
         self.log_tab = ttk.Frame(notebook, padding=12)
 
-        notebook.add(self.pipeline_tab, text="Pipeline")
-        notebook.add(self.history_tab, text="History")
-        notebook.add(self.settings_tab, text="Settings")
-        notebook.add(self.log_tab, text="Logs")
+        notebook.add(self.pipeline_tab, text="  Pipeline  ")
+        notebook.add(self.history_tab, text="  History  ")
+        notebook.add(self.settings_tab, text="  Settings  ")
+        notebook.add(self.log_tab, text="  Logs  ")
 
         self._build_pipeline_tab()
         self._build_history_tab()
@@ -47,29 +79,149 @@ class PipelineApp(tk.Tk):
         self._build_log_tab()
 
         self.status = tk.StringVar(value="Not connected")
-        ttk.Label(self, textvariable=self.status, anchor="w").grid(row=1, column=0, sticky="ew", padx=12, pady=6)
+        ttk.Label(self, textvariable=self.status, anchor="w").grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 8))
+
+    def _build_header(self) -> None:
+        header = tk.Frame(self, bg=DARK)
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(0, weight=1)
+        tk.Label(
+            header,
+            text="SLEAP Pipeline Manager",
+            font=("Arial", 17, "bold"),
+            fg=WHITE,
+            bg=DARK,
+            pady=12,
+        ).grid(row=0, column=0, sticky="w", padx=20)
+        tk.Label(
+            header,
+            text="University of Michigan - Great Lakes HPC",
+            font=("Arial", 10),
+            fg="#bdc3c7",
+            bg=DARK,
+        ).grid(row=0, column=1, sticky="e", padx=20)
 
     def _build_pipeline_tab(self) -> None:
+        self.pipeline_tab.rowconfigure(0, weight=1)
         self.pipeline_tab.columnconfigure(0, weight=1)
-        buttons = [
-            ("Login GL / Bootstrap", self.login_gl),
-            ("Show GL Tasks", self.show_gl_tasks),
-            ("Show Slurm Jobs", self.show_slurm_jobs),
-            ("Open SLEAP", self.open_sleap),
-            ("Train", self.train),
-            ("Download Model", self.download_model),
-            ("Predict", self.predict),
-            ("Download Predictions", self.download_predictions),
-        ]
-        for row, (label, command) in enumerate(buttons):
-            ttk.Button(self.pipeline_tab, text=label, command=command).grid(row=row, column=0, sticky="ew", pady=6)
-        hint = (
-            "Great Lakes tasks are stored under: "
-            "{GL scratch dir}/tasks/{task}. Use Show GL Tasks to list the remote task folders."
-        )
-        ttk.Label(self.pipeline_tab, text=hint, wraplength=840, foreground="#555").grid(
-            row=len(buttons), column=0, sticky="ew", pady=(14, 0)
-        )
+
+        canvas = tk.Canvas(self.pipeline_tab, bg=BG, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self.pipeline_tab, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        inner = tk.Frame(canvas, bg=BG)
+        window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.bind("<Configure>", lambda event: canvas.itemconfig(window_id, width=event.width))
+        inner.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+
+        self._tool_card(inner)
+        for number, title, desc, color, action_label in STEP_DEFS:
+            if action_label == "Open SLEAP":
+                actions = [("Open SLEAP", self.open_sleap)]
+            elif action_label == "Train":
+                actions = [("Train", self.train)]
+            elif action_label == "Predict":
+                actions = [("Predict", self.predict)]
+            elif action_label == "Download":
+                actions = [("Download Model", self.download_model), ("Download Predictions", self.download_predictions)]
+            else:
+                actions = [("Review Predictions", self.review_predictions)]
+            self._step_card(inner, number, title, desc, color, actions)
+
+    def _tool_card(self, parent: tk.Widget) -> None:
+        card = tk.Frame(parent, bg=WHITE, highlightbackground="#dfe6e9", highlightthickness=1)
+        card.pack(fill="x", padx=14, pady=(12, 8))
+        body = tk.Frame(card, bg=WHITE, padx=14, pady=12)
+        body.pack(fill="x")
+        tk.Label(body, text="Great Lakes Controls", font=("Arial", 12, "bold"), bg=WHITE, fg=DARK).pack(anchor="w")
+        tk.Label(
+            body,
+            text="Tasks are stored under {GL scratch dir}/tasks/{task}. Bootstrap uploads scripts and checks the remote SLEAP environment.",
+            font=("Arial", 9),
+            bg=WHITE,
+            fg=MUTED,
+            wraplength=760,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 10))
+        row = tk.Frame(body, bg=WHITE)
+        row.pack(fill="x")
+        for label, command, color in [
+            ("Login GL / Bootstrap", self.login_gl, DARK),
+            ("Show GL Tasks", self.show_gl_tasks, BLUE),
+            ("Show Slurm Jobs", self.show_slurm_jobs, PURPLE),
+        ]:
+            tk.Button(
+                row,
+                text=label,
+                command=command,
+                bg=color,
+                fg=WHITE,
+                activebackground=color,
+                relief="flat",
+                padx=14,
+                pady=7,
+                cursor="hand2",
+            ).pack(side="left", padx=(0, 8))
+
+    def _step_card(self, parent: tk.Widget, number: str, title: str, desc: str, color: str, actions: list[tuple[str, object]]) -> None:
+        card = tk.Frame(parent, bg=WHITE, highlightbackground="#dfe6e9", highlightthickness=1)
+        card.pack(fill="x", padx=14, pady=7)
+        tk.Frame(card, bg=color, width=6).pack(side="left", fill="y")
+
+        body = tk.Frame(card, bg=WHITE, padx=14, pady=12)
+        body.pack(side="left", fill="both", expand=True)
+
+        top = tk.Frame(body, bg=WHITE)
+        top.pack(fill="x")
+        tk.Label(
+            top,
+            text=f"Step {number}: {title}",
+            font=("Arial", 12, "bold"),
+            bg=WHITE,
+            fg=DARK,
+        ).pack(side="left")
+        status = tk.Label(top, text="Pending", font=("Arial", 9), bg=WHITE, fg=MUTED)
+        status.pack(side="right")
+        self.step_labels[number] = status
+
+        tk.Label(
+            body,
+            text=desc,
+            font=("Arial", 9),
+            bg=WHITE,
+            fg=MUTED,
+            wraplength=650,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 0))
+
+        button_frame = tk.Frame(card, bg=WHITE, padx=12)
+        button_frame.pack(side="right", fill="y")
+        for label, command in actions:
+            tk.Button(
+                button_frame,
+                text=label,
+                command=command,
+                bg=color,
+                fg=WHITE,
+                activebackground=color,
+                relief="flat",
+                padx=14,
+                pady=7,
+                cursor="hand2",
+            ).pack(anchor="e", pady=3)
+
+    def _set_status_text(self, text: str) -> None:
+        self.after(0, lambda: self.status.set(text))
+
+    def _set_step_status(self, step: str, text: str, color: str) -> None:
+        def update() -> None:
+            label = self.step_labels.get(step)
+            if label is not None:
+                label.config(text=text, fg=color)
+
+        self.after(0, update)
 
     def _build_history_tab(self) -> None:
         self.history_tab.rowconfigure(0, weight=1)
@@ -150,7 +302,7 @@ class PipelineApp(tk.Tk):
         lib.bootstrap_local_dirs(self.config_data)
         self.refresh_history()
         self.emit("Settings saved.")
-        self.status.set("Settings saved")
+        self._set_status_text("Settings saved")
 
     def _browse_local_project(self) -> None:
         path = filedialog.askdirectory()
@@ -177,13 +329,20 @@ class PipelineApp(tk.Tk):
 
     def run_threaded(self, label: str, func) -> None:
         def worker() -> None:
-            self.status.set(f"{label} running")
+            self._set_status_text(f"{label} running")
+            step = STEP_BY_THREAD_LABEL.get(label)
+            if step:
+                self._set_step_status(step, "Running", YELLOW)
             try:
                 func()
-                self.status.set(f"{label} finished")
+                self._set_status_text(f"{label} finished")
+                if step:
+                    self._set_step_status(step, "Done", GREEN)
             except Exception as exc:
                 self.emit(f"ERROR: {exc}")
-                self.status.set(f"{label} failed")
+                self._set_status_text(f"{label} failed")
+                if step:
+                    self._set_step_status(step, "Error", RED)
                 self.after(0, lambda: messagebox.showerror(label, str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -345,9 +504,33 @@ class PipelineApp(tk.Tk):
             subprocess.Popen([cmd, str(labels_dir)])
         except FileNotFoundError as exc:
             messagebox.showerror("Open SLEAP", f"Could not launch SLEAP command: {cmd}\n{exc}")
+            self._set_step_status("1", "Error", RED)
             return
         self.emit(f"Opened SLEAP for {labels_dir}")
+        self._set_step_status("1", "Running", YELLOW)
         messagebox.showinfo("Export Training Package", "After labeling, export the training package zip into this task's training_package folder.")
+
+    def review_predictions(self) -> None:
+        self.save_settings()
+        initial_dir = self.config_data.local_project_path / "tasks"
+        path = filedialog.askopenfilename(
+            title="Select prediction .slp to review",
+            initialdir=str(initial_dir if initial_dir.exists() else self.config_data.local_project_path),
+            filetypes=[("SLEAP files", "*.slp"), ("All files", "*.*")],
+        )
+        cmd = self.config_data.sleap_label_cmd or lib.default_sleap_command()
+        try:
+            if path:
+                subprocess.Popen([cmd, path])
+                self.emit(f"Opened prediction for review: {path}")
+            else:
+                subprocess.Popen([cmd])
+                self.emit("Opened SLEAP for review.")
+        except FileNotFoundError as exc:
+            messagebox.showerror("Review Predictions", f"Could not launch SLEAP command: {cmd}\n{exc}")
+            self._set_step_status("5", "Error", RED)
+            return
+        self._set_step_status("5", "Running", YELLOW)
 
     def train(self) -> None:
         self.save_settings()

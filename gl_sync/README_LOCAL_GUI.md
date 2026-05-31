@@ -155,8 +155,8 @@ The scripts uploaded by the GUI are:
 
 ## Full Workflow
 
-1. Click `Login GL / Bootstrap`.
-2. Click `Open SLEAP`.
+1. Click `Login GL / Bootstrap` in the Great Lakes Controls card.
+2. Click `Open SLEAP` in Step 1.
 3. Create or select a task.
 4. Label in SLEAP.
 5. Export the training package zip to:
@@ -165,12 +165,13 @@ The scripts uploaded by the GUI are:
 tasks/{task}/training_package/
 ```
 
-6. Click `Train`, select a task and training package zip from the popup, and confirm the generated run name.
+6. Click `Train` in Step 2, select a task and training package zip from the popup, and confirm the generated run name.
 7. Wait for the Great Lakes Slurm job to finish.
-8. Click `Download Model` and select the trained model/run from the popup.
-9. Click `Predict`, select videos, model, and preset.
+8. Click `Download Model` in Step 4 and select the trained model/run from the popup.
+9. Click `Predict` in Step 3, select videos, model, and preset.
 10. Wait for prediction jobs to finish.
-11. Click `Download Predictions` and select the prediction output from the popup.
+11. Click `Download Predictions` in Step 4 and select the prediction output from the popup.
+12. Click `Review Predictions` in Step 5 to open a downloaded `.slp` file in SLEAP for correction.
 
 ## Notes
 
