@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import shlex
 import subprocess
 import sys
@@ -466,6 +467,33 @@ def run_streaming_file(
     return completed
 
 
+def run_capture_to_file(
+    args: list[str],
+    output_path: Path,
+    emit: Callable[[str], None] | None = None,
+    check: bool = True,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    emit = emit or (lambda line: None)
+    emit(f"$ {shell_join(args)}")
+    proc = subprocess.Popen(
+        args,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    assert proc.stdout is not None
+    with output_path.open("wb") as output_file:
+        shutil.copyfileobj(proc.stdout, output_file)
+    code = proc.wait()
+    completed = subprocess.CompletedProcess(args, code, "", "")
+    if check and code:
+        preview = output_path.read_bytes()[:4000].decode(errors="replace")
+        raise subprocess.CalledProcessError(code, args, preview, "")
+    return completed
+
+
 def _ensure_windows_askpass_wrapper() -> str:
     script_dir = Path(__file__).resolve().parent
     askpass_py = script_dir / "ssh_askpass_gui.py"
@@ -578,6 +606,40 @@ def _run_file_with_windows_askpass(
     env = os.environ.copy()
     env.update(_windows_askpass_env())
     return run_streaming_file(args, input_path, emit=emit, check=check, env=env)
+
+
+def _capture_to_file_with_windows_askpass(
+    args: list[str],
+    output_path: Path,
+    emit: Callable[[str], None] | None = None,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env.update(_windows_askpass_env())
+    return run_capture_to_file(args, output_path, emit=emit, check=check, env=env)
+
+
+def _copy_after_marker(source_path: Path, dest_path: Path, marker: bytes) -> bool:
+    keep = b""
+    found = False
+    with source_path.open("rb") as source, dest_path.open("wb") as dest:
+        while True:
+            chunk = source.read(1024 * 1024)
+            if not chunk:
+                break
+            data = keep + chunk
+            if found:
+                dest.write(data)
+                keep = b""
+                continue
+            index = data.find(marker)
+            if index >= 0:
+                dest.write(data[index + len(marker):])
+                keep = b""
+                found = True
+            else:
+                keep = data[-len(marker):]
+    return found
 
 
 def prompt_kind(text: str) -> tuple[str, bool, str | None] | None:
@@ -999,6 +1061,52 @@ def submit_predict_single_ssh(
         return run_streaming_file(args, archive_path, emit=emit)
     finally:
         archive_path.unlink(missing_ok=True)
+
+
+def download_remote_path_tar(
+    config: PipelineConfig,
+    remote_path: str,
+    local_parent: Path,
+    emit: Callable[[str], None] | None = None,
+    input_callback: InputCallback | None = None,
+) -> Path:
+    local_parent.mkdir(parents=True, exist_ok=True)
+    marker = f"__SLEAP_TAR_START_{uuid.uuid4().hex}__"
+    output = Path(tempfile.NamedTemporaryFile(prefix="sleap-download-", suffix=".tar.gz", delete=False).name)
+    captured = Path(tempfile.NamedTemporaryFile(prefix="sleap-ssh-output-", suffix=".bin", delete=False).name)
+    remote_command = (
+        "set -e; "
+        f"target={shlex.quote(remote_path)}; "
+        f"printf '\\n{marker}\\n'; "
+        'parent="$(dirname "$target")"; '
+        'name="$(basename "$target")"; '
+        'tar -C "$parent" -czf - "$name"'
+    )
+    args = ["ssh", *ssh_multiplex_options(config), config.ssh_target, remote_command]
+    try:
+        if input_callback and sys.platform == "win32":
+            _capture_to_file_with_windows_askpass(args, captured, emit=emit)
+        else:
+            run_capture_to_file(args, captured, emit=emit)
+
+        marker_bytes = ("\n" + marker + "\n").encode()
+        if not _copy_after_marker(captured, output, marker_bytes):
+            preview = captured.read_bytes()[:1200].decode(errors="replace")
+            raise RuntimeError("Could not find download marker in SSH output. Remote shell may be printing startup text:\n" + preview)
+        names: list[str] = []
+        with tarfile.open(output, mode="r:gz") as archive:
+            names = [
+                member.name.split("/", 1)[0]
+                for member in archive.getmembers()
+                if member.name and not member.name.startswith("/")
+            ]
+            archive.extractall(local_parent)
+        if names:
+            return local_parent / names[0]
+        return local_parent
+    finally:
+        captured.unlink(missing_ok=True)
+        output.unlink(missing_ok=True)
 
 
 def upload_gl_sync(

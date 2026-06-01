@@ -608,12 +608,21 @@ class PipelineApp(tk.Tk):
             local_dir = lib.ensure_task(self.config_data, task) / "models" / run_name
             local_dir.mkdir(parents=True, exist_ok=True)
             remote_dir = f"{lib.remote_task_dir(self.config_data, task)}/models/{run_name}"
-            lib.sftp_batch(
-                self.config_data,
-                [f"get -r {sftp_quote(remote_dir)} {sftp_quote(local_dir.parent)}"],
-                emit=self.emit,
-                input_callback=self.auth_input,
-            )
+            if sys.platform == "win32":
+                lib.download_remote_path_tar(
+                    self.config_data,
+                    remote_dir,
+                    local_dir.parent,
+                    emit=self.emit,
+                    input_callback=self.auth_input,
+                )
+            else:
+                lib.sftp_batch(
+                    self.config_data,
+                    [f"get -r {sftp_quote(remote_dir)} {sftp_quote(local_dir.parent)}"],
+                    emit=self.emit,
+                    input_callback=self.auth_input,
+                )
             lib.mark_download(self.config_data, "model", {"task": task, "run_name": run_name, "path": str(local_dir)})
             self.after(0, self.refresh_history)
 
@@ -709,12 +718,21 @@ class PipelineApp(tk.Tk):
                 self.emit(f"skip download: {local_file} already exists")
             else:
                 remote_file = f"{lib.remote_task_dir(self.config_data, task)}/{remote_rel}"
-                lib.sftp_batch(
-                    self.config_data,
-                    [f"get {sftp_quote(remote_file)} {sftp_quote(local_file)}"],
-                    emit=self.emit,
-                    input_callback=self.auth_input,
-                )
+                if sys.platform == "win32":
+                    lib.download_remote_path_tar(
+                        self.config_data,
+                        remote_file,
+                        local_exports,
+                        emit=self.emit,
+                        input_callback=self.auth_input,
+                    )
+                else:
+                    lib.sftp_batch(
+                        self.config_data,
+                        [f"get {sftp_quote(remote_file)} {sftp_quote(local_file)}"],
+                        emit=self.emit,
+                        input_callback=self.auth_input,
+                    )
             lib.mark_download(self.config_data, "prediction", {"task": task, "file": local_file.name, "path": str(local_file)})
             self.after(0, self.refresh_history)
 
