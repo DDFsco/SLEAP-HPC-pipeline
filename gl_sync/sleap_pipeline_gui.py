@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import queue
 import subprocess
+import sys
 import threading
 import tkinter as tk
 from datetime import datetime
@@ -313,11 +314,19 @@ class PipelineApp(tk.Tk):
             self.log_text.see("end")
         self.after(100, self._drain_log_queue)
 
-    def run_threaded(self, label: str, func) -> None:
+    def run_threaded(self, label: str, func, *, auth: bool = False) -> None:
+        if auth and sys.platform == "win32" and not self._prepare_windows_auth(label):
+            self._set_status_text(f"{label} cancelled")
+            return
+
         def worker() -> None:
             self._set_status_text(f"{label} running")
             try:
-                func()
+                if auth:
+                    with lib.windows_auth_session(self.config_data):
+                        func()
+                else:
+                    func()
                 self._set_status_text(f"{label} finished")
             except Exception as exc:
                 self.emit(f"ERROR: {exc}")
@@ -325,6 +334,30 @@ class PipelineApp(tk.Tk):
                 self.after(0, lambda: messagebox.showerror(label, str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _prepare_windows_auth(self, label: str) -> bool:
+        if lib.ssh_master_is_running(self.config_data):
+            return True
+        if lib.windows_auth_cache_has_password(self.config_data):
+            return True
+        password = simpledialog.askstring(
+            "Great Lakes Password",
+            (
+                "Enter your Great Lakes password for this SLEAP pipeline action.\n\n"
+                "The app will reuse it for SSH/SFTP commands during this GUI session, so you should not "
+                "have to enter the same password for each upload or remote command. Duo may still "
+                "ask for approval or a passcode when Great Lakes requires it."
+            ),
+            show="*",
+            parent=self,
+        )
+        if password is None:
+            return False
+        if not password:
+            messagebox.showwarning(label, "Great Lakes password was blank. Please try again.")
+            return False
+        lib.seed_windows_auth_cache(self.config_data, password)
+        return True
 
     def auth_input(self, prompt: str, secret: bool, default: str | None = None) -> str | None:
         done = threading.Event()
@@ -349,27 +382,37 @@ class PipelineApp(tk.Tk):
 
         def work() -> None:
             lib.bootstrap_local_dirs(self.config_data)
-            if not lib.ssh_check(self.config_data, emit=self.emit, input_callback=self.auth_input):
-                raise RuntimeError("SSH check failed. Configure SSH keys for Great Lakes first.")
             local_gl_sync = Path(__file__).resolve().parent
-            remote_gl_sync = lib.upload_gl_sync(self.config_data, local_gl_sync, emit=self.emit, input_callback=self.auth_input)
-            remote_tasks = f"mkdir -p {lib.remote_task_dir(self.config_data, '_bootstrap_check').rsplit('/', 1)[0]}"
-            lib.ssh(self.config_data, remote_tasks, emit=self.emit, input_callback=self.auth_input)
-            check = lib.ssh(
-                self.config_data,
-                f"bash {sh_quote(remote_gl_sync + '/install.sh')} --check",
-                emit=self.emit,
-                check=False,
-                input_callback=self.auth_input,
-            )
-            if check.returncode:
-                self.emit("GL install check failed; running remote install.sh.")
-                lib.ssh(self.config_data, f"bash {sh_quote(remote_gl_sync + '/install.sh')}", emit=self.emit, input_callback=self.auth_input)
+            tasks_root = f"{self.config_data.gl_scratch_dir.rstrip('/')}/tasks"
+            if sys.platform == "win32":
+                lib.bootstrap_gl_sync_single_ssh(
+                    self.config_data,
+                    local_gl_sync,
+                    tasks_root,
+                    emit=self.emit,
+                    input_callback=self.auth_input,
+                )
             else:
-                self.emit("GL install check passed.")
+                remote_gl_sync = lib.upload_gl_sync(
+                    self.config_data,
+                    local_gl_sync,
+                    emit=self.emit,
+                    input_callback=self.auth_input,
+                )
+                install_script = sh_quote(f"{remote_gl_sync}/install.sh")
+                lib.ssh(
+                    self.config_data,
+                    (
+                        f"mkdir -p {sh_quote(tasks_root)} && "
+                        f"chmod +x {sh_quote(remote_gl_sync)}/*.sh && "
+                        f"({install_script} --check || {install_script})"
+                    ),
+                    emit=self.emit,
+                    input_callback=self.auth_input,
+                )
             self.emit("GL SSH, gl_sync upload, environment check, and task root are ready.")
 
-        self.run_threaded("Login GL", work)
+        self.run_threaded("Login GL", work, auth=True)
 
     def show_gl_tasks(self) -> None:
         self.save_settings()
@@ -390,7 +433,7 @@ class PipelineApp(tk.Tk):
             self.emit(message)
             self.after(0, lambda: messagebox.showinfo("Great Lakes Tasks", message))
 
-        self.run_threaded("Show GL Tasks", work)
+        self.run_threaded("Show GL Tasks", work, auth=True)
 
     def show_slurm_jobs(self) -> None:
         self.save_settings()
@@ -410,7 +453,7 @@ class PipelineApp(tk.Tk):
             self.emit(message)
             self.after(0, lambda: messagebox.showinfo("Slurm Jobs", message))
 
-        self.run_threaded("Show Slurm Jobs", work)
+        self.run_threaded("Show Slurm Jobs", work, auth=True)
 
     def _ask_task(self, create: bool = True) -> str | None:
         tasks = lib.list_tasks(self.config_data)
@@ -516,18 +559,28 @@ class PipelineApp(tk.Tk):
 
         def work() -> None:
             remote_root = lib.remote_task_dir(self.config_data, task)
-            lib.ssh(self.config_data, f"mkdir -p {remote_root}/training_package", emit=self.emit, input_callback=self.auth_input)
-            lib.sftp_batch(
-                self.config_data,
-                [f"put {sftp_quote(zip_file)} {sftp_quote(remote_root + '/training_package/' + zip_file.name)}"],
-                emit=self.emit,
-                input_callback=self.auth_input,
-            )
-            remote_cmd = (
-                f"SLEAP_SCRATCH_DIR={sh_quote(remote_root)} "
-                f"bash {self.config_data.gl_sync_remote}/train.sh {sh_quote(zip_file.name)} {sh_quote(run_name)}"
-            )
-            result = lib.ssh(self.config_data, remote_cmd, emit=self.emit, input_callback=self.auth_input)
+            if sys.platform == "win32":
+                result = lib.submit_train_single_ssh(
+                    self.config_data,
+                    remote_root,
+                    zip_file,
+                    run_name,
+                    emit=self.emit,
+                    input_callback=self.auth_input,
+                )
+            else:
+                lib.ssh(self.config_data, f"mkdir -p {remote_root}/training_package", emit=self.emit, input_callback=self.auth_input)
+                lib.sftp_batch(
+                    self.config_data,
+                    [f"put {sftp_quote(zip_file)} {sftp_quote(remote_root + '/training_package/' + zip_file.name)}"],
+                    emit=self.emit,
+                    input_callback=self.auth_input,
+                )
+                remote_cmd = (
+                    f"SLEAP_SCRATCH_DIR={sh_quote(remote_root)} "
+                    f"bash {self.config_data.gl_sync_remote}/train.sh {sh_quote(zip_file.name)} {sh_quote(run_name)}"
+                )
+                result = lib.ssh(self.config_data, remote_cmd, emit=self.emit, input_callback=self.auth_input)
             job_id = parse_job_id(result.stdout)
             lib.append_job(
                 self.config_data,
@@ -542,7 +595,7 @@ class PipelineApp(tk.Tk):
             )
             self.after(0, self.refresh_history)
 
-        self.run_threaded("Train", work)
+        self.run_threaded("Train", work, auth=True)
 
     def download_model(self) -> None:
         self.save_settings()
@@ -564,7 +617,7 @@ class PipelineApp(tk.Tk):
             lib.mark_download(self.config_data, "model", {"task": task, "run_name": run_name, "path": str(local_dir)})
             self.after(0, self.refresh_history)
 
-        self.run_threaded("Download Model", work)
+        self.run_threaded("Download Model", work, auth=True)
 
     def predict(self) -> None:
         self.save_settings()
@@ -584,32 +637,47 @@ class PipelineApp(tk.Tk):
 
         def work() -> None:
             remote_root = lib.remote_task_dir(self.config_data, task)
-            lib.ssh(self.config_data, f"mkdir -p {remote_root}/videos {remote_root}/exports", emit=self.emit, input_callback=self.auth_input)
-            for video_name in videos:
-                video = Path(video_name)
-                remote_video = f"{remote_root}/videos/{video.name}"
-                check = lib.ssh(
+            video_paths = [Path(video_name) for video_name in videos]
+            job_ids: list[str] = []
+            if sys.platform == "win32":
+                result = lib.submit_predict_single_ssh(
                     self.config_data,
-                    f"test -f {sh_quote(remote_video)} && stat -c %s {sh_quote(remote_video)} || echo missing",
+                    remote_root,
+                    video_paths,
+                    model,
+                    preset,
                     emit=self.emit,
-                    check=False,
                     input_callback=self.auth_input,
                 )
-                if str(video.stat().st_size) in check.stdout.split():
-                    self.emit(f"skip upload: {video.name} (same size on GL)")
-                else:
-                    lib.sftp_batch(
+                job_ids = parse_job_ids(result.stdout)
+            else:
+                lib.ssh(self.config_data, f"mkdir -p {remote_root}/videos {remote_root}/exports", emit=self.emit, input_callback=self.auth_input)
+                for video in video_paths:
+                    remote_video = f"{remote_root}/videos/{video.name}"
+                    check = lib.ssh(
                         self.config_data,
-                        [f"put {sftp_quote(video)} {sftp_quote(remote_video)}"],
+                        f"test -f {sh_quote(remote_video)} && stat -c %s {sh_quote(remote_video)} || echo missing",
                         emit=self.emit,
+                        check=False,
                         input_callback=self.auth_input,
                     )
-                remote_cmd = (
-                    f"SLEAP_SCRATCH_DIR={sh_quote(remote_root)} "
-                    f"bash {self.config_data.gl_sync_remote}/predict.sh --preset {sh_quote(preset)} "
-                    f"videos/{sh_quote(video.name)} models/{sh_quote(model)}"
-                )
-                result = lib.ssh(self.config_data, remote_cmd, emit=self.emit, input_callback=self.auth_input)
+                    if str(video.stat().st_size) in check.stdout.split():
+                        self.emit(f"skip upload: {video.name} (same size on GL)")
+                    else:
+                        lib.sftp_batch(
+                            self.config_data,
+                            [f"put {sftp_quote(video)} {sftp_quote(remote_video)}"],
+                            emit=self.emit,
+                            input_callback=self.auth_input,
+                        )
+                    remote_cmd = (
+                        f"SLEAP_SCRATCH_DIR={sh_quote(remote_root)} "
+                        f"bash {self.config_data.gl_sync_remote}/predict.sh --preset {sh_quote(preset)} "
+                        f"videos/{sh_quote(video.name)} models/{sh_quote(model)}"
+                    )
+                    result = lib.ssh(self.config_data, remote_cmd, emit=self.emit, input_callback=self.auth_input)
+                    job_ids.append(parse_job_id(result.stdout))
+            for index, video in enumerate(video_paths):
                 lib.append_job(
                     self.config_data,
                     {
@@ -618,13 +686,13 @@ class PipelineApp(tk.Tk):
                         "model": model,
                         "video": video.name,
                         "preset": preset,
-                        "job_id": parse_job_id(result.stdout),
+                        "job_id": job_ids[index] if index < len(job_ids) else "",
                         "expected_output": f"exports/{video.stem}.predicted.slp",
                     },
                 )
             self.after(0, self.refresh_history)
 
-        self.run_threaded("Predict", work)
+        self.run_threaded("Predict", work, auth=True)
 
     def download_predictions(self) -> None:
         self.save_settings()
@@ -650,7 +718,7 @@ class PipelineApp(tk.Tk):
             lib.mark_download(self.config_data, "prediction", {"task": task, "file": local_file.name, "path": str(local_file)})
             self.after(0, self.refresh_history)
 
-        self.run_threaded("Download Predictions", work)
+        self.run_threaded("Download Predictions", work, auth=True)
 
 
 class PresetSelectionDialog:
@@ -982,10 +1050,16 @@ class PredictionSelectionDialog:
 
 
 def parse_job_id(output: str) -> str:
+    ids = parse_job_ids(output)
+    return ids[0] if ids else ""
+
+
+def parse_job_ids(output: str) -> list[str]:
+    job_ids: list[str] = []
     for token in output.replace(".", " ").split():
         if token.isdigit() and len(token) >= 5:
-            return token
-    return ""
+            job_ids.append(token)
+    return job_ids
 
 
 def sh_quote(value: str | os.PathLike[str]) -> str:

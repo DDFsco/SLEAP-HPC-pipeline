@@ -104,7 +104,7 @@ If `GL scratch dir` is blank, the GUI defaults it to:
 
 During `Login GL / Bootstrap`, SSH/SFTP may ask for a password, Duo passcode, verification code, or host-key confirmation. The GUI watches the terminal session and opens a popup when one of these prompts appears. Enter the requested value and click OK; the GUI sends it back to the SSH/SFTP process.
 
-After the first successful login, the GUI reuses an OpenSSH ControlMaster connection for 15 minutes. That should avoid repeated password/Duo prompts during the same bootstrap/train/predict sequence.
+After the first successful login, the GUI reuses an OpenSSH ControlMaster connection for 15 minutes on macOS/Linux. That lets later SSH/SFTP commands reuse the same Great Lakes login instead of asking for password/Duo again. Windows OpenSSH does not provide a working ControlMaster socket for this workflow, so on Windows the GUI asks for the Great Lakes password once and stores it in a temporary `SSH_ASKPASS` cache for the GUI session. Duo prompts may still appear when Great Lakes requires them.
 
 Use `Show GL Tasks` to list remote task folders stored under:
 
@@ -118,7 +118,7 @@ Use `Show Slurm Jobs` to check active Great Lakes jobs for the configured uniqna
 squeue -u {GL uniqname}
 ```
 
-If Great Lakes rejects the login immediately with `Permission denied (publickey,keyboard-interactive)` and no popup appears, SSH is not offering an interactive prompt to the client. In that case, first confirm that normal Terminal login works:
+If Great Lakes rejects the login immediately with `Permission denied (publickey,keyboard-interactive)` and no popup appears, SSH is not offering an interactive prompt to the client. In that case, first confirm that normal Terminal or PowerShell login works:
 
 ```bash
 ssh uniqname@greatlakes.arc-ts.umich.edu

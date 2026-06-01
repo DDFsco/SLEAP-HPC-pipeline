@@ -5,11 +5,16 @@ import os
 import shlex
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
+import uuid
+from io import BytesIO
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -21,10 +26,16 @@ GL_SYNC_SKIP_DIRS = {"__pycache__", ".git", ".venv", "venv", "tasks"}
 GL_SYNC_SKIP_SUFFIXES = {".pyc", ".pyo"}
 INFERENCE_CONFIG_SUFFIXES = {".conf", ".env", ".sh"}
 InputCallback = Callable[[str, bool, str | None], str | None]
+_windows_auth_config: ContextVar["PipelineConfig | None"] = ContextVar("windows_auth_config", default=None)
+AUTH_CACHE_TTL_SECONDS = 8 * 60 * 60
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+def local_now() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def local_from_timestamp(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp).astimezone().isoformat(timespec="seconds")
 
 
 @dataclass
@@ -92,14 +103,14 @@ def save_pipeline_log(config: PipelineConfig, data: dict) -> None:
 
 def append_job(config: PipelineConfig, job: dict) -> None:
     data = load_pipeline_log(config)
-    data.setdefault("jobs", []).append({"submitted_at": utc_now(), "status": "submitted", **job})
+    data.setdefault("jobs", []).append({"submitted_at": local_now(), "status": "submitted", **job})
     save_pipeline_log(config, data)
 
 
 def mark_download(config: PipelineConfig, kind: str, record: dict) -> None:
     key = {"model": "downloaded_models", "prediction": "downloaded_predictions"}[kind]
     data = load_pipeline_log(config)
-    data.setdefault(key, []).append({"downloaded_at": utc_now(), **record})
+    data.setdefault(key, []).append({"downloaded_at": local_now(), **record})
     save_pipeline_log(config, data)
 
 
@@ -188,7 +199,7 @@ def list_model_refs(config: PipelineConfig, task: str | None = None) -> list[dic
                 "task": key[0],
                 "model": key[1],
                 "source": "local model folder",
-                "time": refs.get(key, {}).get("time", datetime.fromtimestamp(model_dir.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")),
+                "time": refs.get(key, {}).get("time", local_from_timestamp(model_dir.stat().st_mtime)),
                 "path": str(model_dir),
                 "job_id": refs.get(key, {}).get("job_id", ""),
             }
@@ -258,7 +269,7 @@ def list_prediction_refs(config: PipelineConfig, task: str | None = None) -> lis
                 "file": export_file.name,
                 "remote_rel": refs.get(key, {}).get("remote_rel", f"exports/{export_file.name}"),
                 "source": "local export file",
-                "time": refs.get(key, {}).get("time", datetime.fromtimestamp(export_file.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")),
+                "time": refs.get(key, {}).get("time", local_from_timestamp(export_file.stat().st_mtime)),
                 "path": str(export_file),
                 "job_id": refs.get(key, {}).get("job_id", ""),
                 "model": refs.get(key, {}).get("model", ""),
@@ -303,6 +314,10 @@ def ssh_control_path(config: PipelineConfig) -> str:
 
 
 def ssh_multiplex_options(config: PipelineConfig) -> list[str]:
+    # Windows OpenSSH accepts these options in `ssh -G`, but the actual
+    # connection fails with "getsockname failed: Not a socket".
+    if sys.platform == "win32":
+        return []
     return [
         "-o",
         "ControlMaster=auto",
@@ -313,22 +328,59 @@ def ssh_multiplex_options(config: PipelineConfig) -> list[str]:
     ]
 
 
+def ssh_master_is_running(config: PipelineConfig) -> bool:
+    if sys.platform == "win32":
+        return False
+    args = [
+        "ssh",
+        *ssh_multiplex_options(config),
+        "-o",
+        "BatchMode=yes",
+        "-O",
+        "check",
+        config.ssh_target,
+    ]
+    proc = subprocess.run(
+        args,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    return proc.returncode == 0
+
+
 def run_streaming(
     args: list[str],
     emit: Callable[[str], None] | None = None,
     cwd: Path | None = None,
     check: bool = True,
+    env: dict[str, str] | None = None,
+    input_text: str | None = None,
+    close_stdin: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     emit = emit or (lambda line: None)
     emit(f"$ {shell_join(args)}")
+    if input_text is not None:
+        stdin = subprocess.PIPE
+    elif close_stdin:
+        stdin = subprocess.DEVNULL
+    else:
+        stdin = None
     proc = subprocess.Popen(
         args,
         cwd=str(cwd) if cwd else None,
+        env=env,
+        stdin=stdin,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
     )
+    if input_text is not None and proc.stdin is not None:
+        proc.stdin.write(input_text)
+        proc.stdin.close()
     output: list[str] = []
     assert proc.stdout is not None
     for line in proc.stdout:
@@ -339,6 +391,193 @@ def run_streaming(
     if check and code:
         raise subprocess.CalledProcessError(code, args, completed.stdout, completed.stderr)
     return completed
+
+
+def run_streaming_binary(
+    args: list[str],
+    input_bytes: bytes,
+    emit: Callable[[str], None] | None = None,
+    check: bool = True,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    emit = emit or (lambda line: None)
+    emit(f"$ {shell_join(args)}")
+    proc = subprocess.Popen(
+        args,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    output_bytes, _ = proc.communicate(input_bytes)
+    output = output_bytes.decode(errors="replace")
+    for line in output.splitlines():
+        emit(line.rstrip())
+    completed = subprocess.CompletedProcess(args, proc.returncode, output, "")
+    if check and proc.returncode:
+        raise subprocess.CalledProcessError(proc.returncode, args, output, "")
+    return completed
+
+
+def run_streaming_file(
+    args: list[str],
+    input_path: Path,
+    emit: Callable[[str], None] | None = None,
+    check: bool = True,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    emit = emit or (lambda line: None)
+    emit(f"$ {shell_join(args)}")
+    proc = subprocess.Popen(
+        args,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    output_chunks: list[bytes] = []
+
+    def read_output() -> None:
+        assert proc.stdout is not None
+        while True:
+            chunk = proc.stdout.read(4096)
+            if not chunk:
+                break
+            output_chunks.append(chunk)
+
+    reader = threading.Thread(target=read_output, daemon=True)
+    reader.start()
+    assert proc.stdin is not None
+    with input_path.open("rb") as source:
+        while True:
+            chunk = source.read(1024 * 1024)
+            if not chunk:
+                break
+            proc.stdin.write(chunk)
+    proc.stdin.close()
+    code = proc.wait()
+    reader.join(timeout=5)
+    output = b"".join(output_chunks).decode(errors="replace")
+    for line in output.splitlines():
+        emit(line.rstrip())
+    completed = subprocess.CompletedProcess(args, code, output, "")
+    if check and code:
+        raise subprocess.CalledProcessError(code, args, output, "")
+    return completed
+
+
+def _ensure_windows_askpass_wrapper() -> str:
+    script_dir = Path(__file__).resolve().parent
+    askpass_py = script_dir / "ssh_askpass_gui.py"
+    wrapper = Path(tempfile.gettempdir()) / "sleap_ssh_askpass.cmd"
+    pythonw = Path(sys.executable).with_name("pythonw.exe")
+    launcher = str(pythonw) if pythonw.is_file() else sys.executable
+    content = f'@echo off\r\n"{launcher}" "{askpass_py}"\r\n'
+    if not wrapper.exists() or wrapper.read_text(encoding="utf-8") != content:
+        wrapper.write_text(content, encoding="utf-8")
+    return str(wrapper)
+
+
+def _auth_cache_path(config: PipelineConfig) -> Path:
+    user = safe_control_name(config.gl_user or "user")
+    host = safe_control_name(config.gl_host or "host")
+    return Path(tempfile.gettempdir()) / f"sleap_auth_cache_{user}_{host}.json"
+
+
+def seed_windows_auth_cache(config: PipelineConfig, password: str) -> None:
+    """Preload the Windows SSH_ASKPASS cache so password is requested once."""
+    cache_path = _auth_cache_path(config)
+    cache = {}
+    if cache_path.exists():
+        try:
+            loaded = json.loads(cache_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                cache = loaded
+        except (OSError, json.JSONDecodeError):
+            cache = {}
+    cache["password"] = password
+    cache_path.write_text(json.dumps(cache), encoding="utf-8")
+
+
+def windows_auth_cache_has_password(config: PipelineConfig) -> bool:
+    cache_path = _auth_cache_path(config)
+    if not cache_path.exists():
+        return False
+    try:
+        if time.time() - cache_path.stat().st_mtime > AUTH_CACHE_TTL_SECONDS:
+            return False
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(isinstance(data, dict) and data.get("password"))
+
+
+@contextmanager
+def windows_auth_session(config: PipelineConfig):
+    """Reuse cached Great Lakes password across SSH/SFTP calls on Windows."""
+    token = _windows_auth_config.set(config)
+    try:
+        yield
+    finally:
+        _windows_auth_config.reset(token)
+
+
+def _windows_askpass_env() -> dict[str, str]:
+    connection_id = uuid.uuid4().hex
+    count_file = Path(tempfile.gettempdir()) / f"sleap_askpass_{connection_id}.count"
+    count_file.write_text("0", encoding="utf-8")
+    env = {
+        "SSH_ASKPASS": _ensure_windows_askpass_wrapper(),
+        "SSH_ASKPASS_REQUIRE": "force",
+        "DISPLAY": "dummy",
+        "SLEAP_ASKPASS_CONNECTION": connection_id,
+    }
+    config = _windows_auth_config.get()
+    if config is not None:
+        env["SLEAP_AUTH_CACHE"] = str(_auth_cache_path(config))
+    return env
+
+
+def _run_with_windows_askpass(
+    args: list[str],
+    emit: Callable[[str], None] | None = None,
+    check: bool = True,
+    cwd: Path | None = None,
+    input_text: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env.update(_windows_askpass_env())
+    return run_streaming(
+        args,
+        emit=emit,
+        cwd=cwd,
+        check=check,
+        env=env,
+        input_text=input_text,
+        close_stdin=input_text is None,
+    )
+
+
+def _run_binary_with_windows_askpass(
+    args: list[str],
+    input_bytes: bytes,
+    emit: Callable[[str], None] | None = None,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env.update(_windows_askpass_env())
+    return run_streaming_binary(args, input_bytes, emit=emit, check=check, env=env)
+
+
+def _run_file_with_windows_askpass(
+    args: list[str],
+    input_path: Path,
+    emit: Callable[[str], None] | None = None,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env.update(_windows_askpass_env())
+    return run_streaming_file(args, input_path, emit=emit, check=check, env=env)
 
 
 def prompt_kind(text: str) -> tuple[str, bool, str | None] | None:
@@ -365,14 +604,14 @@ def run_interactive(
     wait_for_prompt: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     if sys.platform == "win32":
-        return _run_interactive_windows(
-            args,
-            emit=emit,
-            input_callback=input_callback,
-            check=check,
-            stdin_text=stdin_text,
-            wait_for_prompt=wait_for_prompt,
-        )
+        if input_callback or stdin_text is not None:
+            return _run_with_windows_askpass(
+                args,
+                emit=emit,
+                check=check,
+                input_text=stdin_text,
+            )
+        return run_streaming(args, emit=emit, check=check)
     return _run_interactive_unix(
         args,
         emit=emit,
@@ -381,99 +620,6 @@ def run_interactive(
         stdin_text=stdin_text,
         wait_for_prompt=wait_for_prompt,
     )
-
-
-def _run_interactive_windows(
-    args: list[str],
-    emit: Callable[[str], None] | None = None,
-    input_callback: InputCallback | None = None,
-    check: bool = True,
-    stdin_text: str | None = None,
-    wait_for_prompt: str | None = None,
-) -> subprocess.CompletedProcess[str]:
-    emit = emit or (lambda line: None)
-    cmd = list(args)
-    if cmd and cmd[0] == "ssh" and "-tt" not in cmd and "-t" not in cmd:
-        cmd = [cmd[0], "-tt", *cmd[1:]]
-    emit(f"$ {shell_join(cmd)}")
-
-    proc = subprocess.Popen(
-        cmd,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        bufsize=0,
-    )
-    output: list[str] = []
-    pending = ""
-    sent_stdin = False
-    lock = threading.Lock()
-    stop = threading.Event()
-
-    def reader() -> None:
-        nonlocal pending
-        assert proc.stdout is not None
-        while not stop.is_set():
-            try:
-                data = proc.stdout.read(4096)
-            except OSError:
-                break
-            if not data:
-                break
-            text = data.decode(errors="replace")
-            with lock:
-                output.append(text)
-                pending = (pending + text)[-2000:]
-            for line in text.replace("\r", "").splitlines():
-                if line.strip():
-                    emit(line.rstrip())
-
-    reader_thread = threading.Thread(target=reader, daemon=True)
-    reader_thread.start()
-
-    try:
-        while proc.poll() is None:
-            with lock:
-                current_pending = pending
-
-            if stdin_text is not None and not sent_stdin and wait_for_prompt and wait_for_prompt in current_pending:
-                assert proc.stdin is not None
-                proc.stdin.write(stdin_text.encode())
-                proc.stdin.flush()
-                sent_stdin = True
-
-            if input_callback:
-                prompt = prompt_kind(current_pending)
-                if prompt:
-                    label, secret, default = prompt
-                    response = input_callback(label + "\n\n" + current_pending.strip()[-500:], secret, default)
-                    if response is None:
-                        proc.terminate()
-                        raise RuntimeError("Authentication input cancelled.")
-                    assert proc.stdin is not None
-                    proc.stdin.write((response + "\n").encode())
-                    proc.stdin.flush()
-                    with lock:
-                        pending = ""
-
-            if stdin_text is not None and not sent_stdin and not wait_for_prompt:
-                assert proc.stdin is not None
-                proc.stdin.write(stdin_text.encode())
-                proc.stdin.flush()
-                sent_stdin = True
-
-            time.sleep(0.1)
-    finally:
-        stop.set()
-        if proc.stdin is not None:
-            proc.stdin.close()
-        reader_thread.join(timeout=5)
-
-    code = proc.returncode if proc.returncode is not None else 1
-    completed = subprocess.CompletedProcess(args, code, "".join(output), "")
-    if check and code:
-        raise subprocess.CalledProcessError(code, args, completed.stdout, completed.stderr)
-    return completed
 
 
 def _run_interactive_unix(
@@ -614,6 +760,13 @@ def sftp_batch(
     input_callback: InputCallback | None = None,
 ):
     emit = emit or (lambda line: None)
+    if input_callback and sys.platform == "win32":
+        emit("$ sftp " + config.ssh_target)
+        return _run_with_windows_askpass(
+            ["sftp", *ssh_multiplex_options(config), config.ssh_target],
+            emit=emit,
+            input_text="\n".join(commands + ["bye"]) + "\n",
+        )
     if input_callback:
         emit("$ sftp " + config.ssh_target)
         batch = "\n".join(commands + ["bye"]) + "\n"
@@ -686,6 +839,168 @@ def should_upload(path: Path) -> bool:
     return True
 
 
+def _gl_sync_tar_bytes(local_gl_sync: Path) -> bytes:
+    buffer = BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        for path in sorted(local_gl_sync.rglob("*")):
+            rel = path.relative_to(local_gl_sync)
+            if not path.is_file() or not should_upload(rel):
+                continue
+            data = path.read_bytes()
+            if path.suffix in INFERENCE_CONFIG_SUFFIXES:
+                data = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+            info = tarfile.TarInfo(rel.as_posix())
+            info.size = len(data)
+            info.mtime = path.stat().st_mtime
+            info.mode = 0o755 if path.suffix == ".sh" else 0o644
+            archive.addfile(info, BytesIO(data))
+    return buffer.getvalue()
+
+
+def _tar_file_bytes(paths: list[Path], arcname_for: Callable[[Path], str], *, gzip: bool = False) -> bytes:
+    buffer = BytesIO()
+    mode = "w:gz" if gzip else "w"
+    with tarfile.open(fileobj=buffer, mode=mode) as archive:
+        for path in paths:
+            data = path.read_bytes()
+            info = tarfile.TarInfo(arcname_for(path))
+            info.size = len(data)
+            info.mtime = path.stat().st_mtime
+            info.mode = 0o644
+            archive.addfile(info, BytesIO(data))
+    return buffer.getvalue()
+
+
+def _tar_file_to_temp(paths: list[Path], arcname_for: Callable[[Path], str]) -> Path:
+    temp = tempfile.NamedTemporaryFile(prefix="sleap-upload-", suffix=".tar", delete=False)
+    temp_path = Path(temp.name)
+    temp.close()
+    try:
+        with tarfile.open(temp_path, mode="w") as archive:
+            for path in paths:
+                archive.add(path, arcname=arcname_for(path), recursive=False)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+    return temp_path
+
+
+def _remote_root_shell(remote_spec: str) -> str:
+    remote_spec = remote_spec.rstrip("/")
+    if remote_spec == "~":
+        return "$HOME"
+    if remote_spec.startswith("~/"):
+        return "$HOME/" + remote_spec[2:]
+    return remote_spec
+
+
+def _remote_assignment(name: str, value: str) -> str:
+    if value == "$HOME" or value.startswith("$HOME/"):
+        return f'{name}="{value}"'
+    return f"{name}={shlex.quote(value)}"
+
+
+def bootstrap_gl_sync_single_ssh(
+    config: PipelineConfig,
+    local_gl_sync: Path,
+    tasks_root: str,
+    emit: Callable[[str], None] | None = None,
+    input_callback: InputCallback | None = None,
+) -> str:
+    local_gl_sync = local_gl_sync.resolve()
+    if not local_gl_sync.is_dir():
+        raise FileNotFoundError(f"Local gl_sync directory not found: {local_gl_sync}")
+
+    required = ["install.sh", "train.sh", "predict.sh", "sleap_common.sh"]
+    missing = [name for name in required if not (local_gl_sync / name).is_file()]
+    if missing:
+        raise FileNotFoundError("Missing required GL scripts in local gl_sync: " + ", ".join(missing))
+
+    archive = _gl_sync_tar_bytes(local_gl_sync)
+    remote_root = _remote_root_shell(config.gl_sync_remote)
+    remote_command = (
+        "set -e; "
+        f"{_remote_assignment('remote_root', remote_root)}; "
+        f"tasks_root={shlex.quote(tasks_root)}; "
+        'mkdir -p "$remote_root" "$tasks_root"; '
+        'tar -xzf - -C "$remote_root"; '
+        'chmod +x "$remote_root"/*.sh; '
+        '"$remote_root/install.sh" --check || "$remote_root/install.sh"'
+    )
+    args = ["ssh", *ssh_multiplex_options(config), config.ssh_target, remote_command]
+    if input_callback and sys.platform == "win32":
+        _run_binary_with_windows_askpass(args, archive, emit=emit)
+    else:
+        run_streaming_binary(args, archive, emit=emit)
+
+    if config.gl_sync_remote == "~" or config.gl_sync_remote.startswith("~/"):
+        return "/home/" + safe_control_name(config.gl_user) + ("" if config.gl_sync_remote == "~" else "/" + config.gl_sync_remote[2:].rstrip("/"))
+    return config.gl_sync_remote.rstrip("/")
+
+
+def submit_train_single_ssh(
+    config: PipelineConfig,
+    task_remote_root: str,
+    zip_file: Path,
+    run_name: str,
+    emit: Callable[[str], None] | None = None,
+    input_callback: InputCallback | None = None,
+) -> subprocess.CompletedProcess[str]:
+    zip_file = zip_file.resolve()
+    archive = _tar_file_bytes([zip_file], lambda path: path.name)
+    script_root = _remote_root_shell(config.gl_sync_remote)
+    remote_command = (
+        "set -e; "
+        f"work={shlex.quote(task_remote_root)}; "
+        f"{_remote_assignment('script_root', script_root)}; "
+        'mkdir -p "$work/training_package"; '
+        'tar -xf - -C "$work/training_package"; '
+        f"SLEAP_SCRATCH_DIR={shlex.quote(task_remote_root)} "
+        '"$script_root/train.sh" '
+        f"{shlex.quote(zip_file.name)} {shlex.quote(run_name)}"
+    )
+    args = ["ssh", *ssh_multiplex_options(config), config.ssh_target, remote_command]
+    if input_callback and sys.platform == "win32":
+        return _run_binary_with_windows_askpass(args, archive, emit=emit)
+    return run_streaming_binary(args, archive, emit=emit)
+
+
+def submit_predict_single_ssh(
+    config: PipelineConfig,
+    task_remote_root: str,
+    videos: list[Path],
+    model: str,
+    preset: str,
+    emit: Callable[[str], None] | None = None,
+    input_callback: InputCallback | None = None,
+) -> subprocess.CompletedProcess[str]:
+    video_paths = [path.resolve() for path in videos]
+    archive_path = _tar_file_to_temp(video_paths, lambda path: path.name)
+    script_root = _remote_root_shell(config.gl_sync_remote)
+    video_names = " ".join(shlex.quote(path.name) for path in video_paths)
+    remote_command = (
+        "set -e; "
+        f"work={shlex.quote(task_remote_root)}; "
+        f"{_remote_assignment('script_root', script_root)}; "
+        'mkdir -p "$work/videos" "$work/exports"; '
+        'tar -xf - -C "$work/videos"; '
+        f"for video_name in {video_names}; do "
+        f"SLEAP_SCRATCH_DIR={shlex.quote(task_remote_root)} "
+        '"$script_root/predict.sh" '
+        f"--preset {shlex.quote(preset)} "
+        '"videos/${video_name}" '
+        f"models/{shlex.quote(model)}; "
+        "done"
+    )
+    args = ["ssh", *ssh_multiplex_options(config), config.ssh_target, remote_command]
+    try:
+        if input_callback and sys.platform == "win32":
+            return _run_file_with_windows_askpass(args, archive_path, emit=emit)
+        return run_streaming_file(args, archive_path, emit=emit)
+    finally:
+        archive_path.unlink(missing_ok=True)
+
+
 def upload_gl_sync(
     config: PipelineConfig,
     local_gl_sync: Path,
@@ -701,18 +1016,58 @@ def upload_gl_sync(
     if missing:
         raise FileNotFoundError("Missing required GL scripts in local gl_sync: " + ", ".join(missing))
 
-    remote_root = expand_remote_path(config, config.gl_sync_remote, emit=emit, input_callback=input_callback).rstrip("/")
     files = [
         path
         for path in sorted(local_gl_sync.rglob("*"))
         if path.is_file() and should_upload(path.relative_to(local_gl_sync))
     ]
-    dirs = sorted({remote_root + "/" + str(path.parent.relative_to(local_gl_sync)) for path in files if path.parent != local_gl_sync})
+    remote_spec = config.gl_sync_remote.rstrip("/")
+    start = "__SLEAP_HOME_START__"
+    end = "__SLEAP_HOME_END__"
+
+    if remote_spec == "~" or remote_spec.startswith("~/"):
+        rel_root = "" if remote_spec == "~" else remote_spec[2:]
+        rel_dirs = sorted(
+            {
+                str(path.parent.relative_to(local_gl_sync)).replace("\\", "/")
+                for path in files
+                if path.parent != local_gl_sync
+            }
+        )
+        mkdir_parts = [f'"$HOME/{rel_root}"' if rel_root else '"$HOME"']
+        for rel_dir in rel_dirs:
+            if rel_root:
+                mkdir_parts.append(f'"$HOME/{rel_root}/{rel_dir}"')
+            else:
+                mkdir_parts.append(f'"$HOME/{rel_dir}"')
+        mkdir_cmd = " ".join(mkdir_parts)
+        result = ssh(
+            config,
+            f'printf "{start}%s{end}" "$HOME" && mkdir -p {mkdir_cmd}',
+            emit=emit,
+            input_callback=input_callback,
+        )
+        output = result.stdout
+        if start not in output or end not in output:
+            raise RuntimeError("Could not resolve remote $HOME.")
+        home = output.split(start, 1)[1].split(end, 1)[0].strip()
+        if not home:
+            raise RuntimeError("Could not resolve remote $HOME.")
+        remote_root = f"{home}/{rel_root}".rstrip("/") if rel_root else home
+    else:
+        remote_root = remote_spec
+        rel_dirs = sorted(
+            {
+                str(path.parent.relative_to(local_gl_sync)).replace("\\", "/")
+                for path in files
+                if path.parent != local_gl_sync
+            }
+        )
+        mkdir_parts = [shlex.quote(remote_root), *[shlex.quote(f"{remote_root}/{rel_dir}") for rel_dir in rel_dirs]]
+        ssh(config, f"mkdir -p {' '.join(mkdir_parts)}", emit=emit, input_callback=input_callback)
 
     if emit:
         emit(f"Uploading gl_sync to GL: {local_gl_sync} -> {remote_root}")
-    lib_dirs = " ".join(shlex.quote(path) for path in [remote_root, *dirs])
-    ssh(config, f"mkdir -p {lib_dirs}", emit=emit, input_callback=input_callback)
 
     commands: list[str] = []
     for path in files:
@@ -720,7 +1075,16 @@ def upload_gl_sync(
         remote_file = remote_root + "/" + rel.as_posix()
         commands.append(f"put {sftp_quote(path)} {sftp_quote(remote_file)}")
     sftp_batch(config, commands, emit=emit, input_callback=input_callback)
-    ssh(config, f"chmod +x {shlex.quote(remote_root)}/*.sh", emit=emit, check=False, input_callback=input_callback)
+    ssh(
+        config,
+        (
+            f"find {shlex.quote(remote_root)} -type f "
+            "\\( -name '*.sh' -o -name '*.conf' -o -name '*.env' \\) "
+            "-exec sed -i 's/\\r$//' {} +"
+        ),
+        emit=emit,
+        input_callback=input_callback,
+    )
     if emit:
         emit(f"Uploaded {len(files)} gl_sync file(s).")
     return remote_root
