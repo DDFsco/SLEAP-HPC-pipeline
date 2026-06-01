@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 import os
-import pty
-import select
-import signal
 import shlex
 import subprocess
 import sys
+import tempfile
+import threading
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -297,6 +297,8 @@ def safe_control_name(value: str) -> str:
 def ssh_control_path(config: PipelineConfig) -> str:
     user = safe_control_name(config.gl_user or "user")
     host = safe_control_name(config.gl_host or "host")
+    if sys.platform == "win32":
+        return str(Path(tempfile.gettempdir()) / f"sleap-gl-{user}-{host}-%p")
     return f"/tmp/sleap-gl-{user}-{host}-%p"
 
 
@@ -362,6 +364,130 @@ def run_interactive(
     stdin_text: str | None = None,
     wait_for_prompt: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    if sys.platform == "win32":
+        return _run_interactive_windows(
+            args,
+            emit=emit,
+            input_callback=input_callback,
+            check=check,
+            stdin_text=stdin_text,
+            wait_for_prompt=wait_for_prompt,
+        )
+    return _run_interactive_unix(
+        args,
+        emit=emit,
+        input_callback=input_callback,
+        check=check,
+        stdin_text=stdin_text,
+        wait_for_prompt=wait_for_prompt,
+    )
+
+
+def _run_interactive_windows(
+    args: list[str],
+    emit: Callable[[str], None] | None = None,
+    input_callback: InputCallback | None = None,
+    check: bool = True,
+    stdin_text: str | None = None,
+    wait_for_prompt: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    emit = emit or (lambda line: None)
+    cmd = list(args)
+    if cmd and cmd[0] == "ssh" and "-tt" not in cmd and "-t" not in cmd:
+        cmd = [cmd[0], "-tt", *cmd[1:]]
+    emit(f"$ {shell_join(cmd)}")
+
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=0,
+    )
+    output: list[str] = []
+    pending = ""
+    sent_stdin = False
+    lock = threading.Lock()
+    stop = threading.Event()
+
+    def reader() -> None:
+        nonlocal pending
+        assert proc.stdout is not None
+        while not stop.is_set():
+            try:
+                data = proc.stdout.read(4096)
+            except OSError:
+                break
+            if not data:
+                break
+            text = data.decode(errors="replace")
+            with lock:
+                output.append(text)
+                pending = (pending + text)[-2000:]
+            for line in text.replace("\r", "").splitlines():
+                if line.strip():
+                    emit(line.rstrip())
+
+    reader_thread = threading.Thread(target=reader, daemon=True)
+    reader_thread.start()
+
+    try:
+        while proc.poll() is None:
+            with lock:
+                current_pending = pending
+
+            if stdin_text is not None and not sent_stdin and wait_for_prompt and wait_for_prompt in current_pending:
+                assert proc.stdin is not None
+                proc.stdin.write(stdin_text.encode())
+                proc.stdin.flush()
+                sent_stdin = True
+
+            if input_callback:
+                prompt = prompt_kind(current_pending)
+                if prompt:
+                    label, secret, default = prompt
+                    response = input_callback(label + "\n\n" + current_pending.strip()[-500:], secret, default)
+                    if response is None:
+                        proc.terminate()
+                        raise RuntimeError("Authentication input cancelled.")
+                    assert proc.stdin is not None
+                    proc.stdin.write((response + "\n").encode())
+                    proc.stdin.flush()
+                    with lock:
+                        pending = ""
+
+            if stdin_text is not None and not sent_stdin and not wait_for_prompt:
+                assert proc.stdin is not None
+                proc.stdin.write(stdin_text.encode())
+                proc.stdin.flush()
+                sent_stdin = True
+
+            time.sleep(0.1)
+    finally:
+        stop.set()
+        if proc.stdin is not None:
+            proc.stdin.close()
+        reader_thread.join(timeout=5)
+
+    code = proc.returncode if proc.returncode is not None else 1
+    completed = subprocess.CompletedProcess(args, code, "".join(output), "")
+    if check and code:
+        raise subprocess.CalledProcessError(code, args, completed.stdout, completed.stderr)
+    return completed
+
+
+def _run_interactive_unix(
+    args: list[str],
+    emit: Callable[[str], None] | None = None,
+    input_callback: InputCallback | None = None,
+    check: bool = True,
+    stdin_text: str | None = None,
+    wait_for_prompt: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    import pty
+    import select
+    import signal
+
     emit = emit or (lambda line: None)
     emit(f"$ {shell_join(args)}")
 
