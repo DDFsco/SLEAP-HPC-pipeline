@@ -950,6 +950,26 @@ def _tar_file_to_temp(paths: list[Path], arcname_for: Callable[[Path], str]) -> 
     return temp_path
 
 
+def _predict_payload_tar_to_temp(videos: list[Path], model: str, local_model_dir: Path | None = None) -> Path:
+    temp = tempfile.NamedTemporaryFile(prefix="sleap-predict-", suffix=".tar", delete=False)
+    temp_path = Path(temp.name)
+    temp.close()
+    try:
+        with tarfile.open(temp_path, mode="w") as archive:
+            for video in videos:
+                archive.add(video, arcname=f"videos/{video.name}", recursive=False)
+            if local_model_dir is not None and local_model_dir.is_dir():
+                for path in sorted(local_model_dir.rglob("*")):
+                    if not path.is_file():
+                        continue
+                    rel = path.relative_to(local_model_dir).as_posix()
+                    archive.add(path, arcname=f"models/{model}/{rel}", recursive=False)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+    return temp_path
+
+
 def _remote_root_shell(remote_spec: str) -> str:
     remote_spec = remote_spec.rstrip("/")
     if remote_spec == "~":
@@ -1036,25 +1056,42 @@ def submit_predict_single_ssh(
     videos: list[Path],
     model: str,
     preset: str,
+    local_model_dir: Path | None = None,
     emit: Callable[[str], None] | None = None,
     input_callback: InputCallback | None = None,
 ) -> subprocess.CompletedProcess[str]:
     video_paths = [path.resolve() for path in videos]
-    archive_path = _tar_file_to_temp(video_paths, lambda path: path.name)
+    archive_path = _predict_payload_tar_to_temp(video_paths, model, local_model_dir)
     script_root = _remote_root_shell(config.gl_sync_remote)
     video_names = " ".join(shlex.quote(path.name) for path in video_paths)
     remote_command = (
         "set -e; "
         f"work={shlex.quote(task_remote_root)}; "
         f"{_remote_assignment('script_root', script_root)}; "
+        f"model_name={shlex.quote(model)}; "
+        'upload_dir="$(mktemp -d)"; '
+        'trap \'rm -rf "$upload_dir"\' EXIT; '
         'mkdir -p "$work/videos" "$work/exports"; '
-        'tar -xf - -C "$work/videos"; '
+        'tar -xf - -C "$upload_dir"; '
+        f"for video_name in {video_names}; do "
+        'cp -f "$upload_dir/videos/$video_name" "$work/videos/$video_name"; '
+        "done; "
+        'if [[ ! -e "$work/models/$model_name" ]]; then '
+        'if [[ -d "$upload_dir/models/$model_name" ]]; then '
+        'mkdir -p "$work/models"; '
+        'cp -a "$upload_dir/models/$model_name" "$work/models/$model_name"; '
+        'echo "Uploaded missing model to GL: $model_name"; '
+        'else '
+        'echo "Model not found on GL and no local model was bundled: $work/models/$model_name" >&2; '
+        'exit 1; '
+        'fi; '
+        'fi; '
         f"for video_name in {video_names}; do "
         f"SLEAP_SCRATCH_DIR={shlex.quote(task_remote_root)} "
         '"$script_root/predict.sh" '
         f"--preset {shlex.quote(preset)} "
         '"videos/${video_name}" '
-        f"models/{shlex.quote(model)}; "
+        '"models/${model_name}"; '
         "done"
     )
     args = ["ssh", *ssh_multiplex_options(config), config.ssh_target, remote_command]

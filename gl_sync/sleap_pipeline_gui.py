@@ -647,6 +647,7 @@ class PipelineApp(tk.Tk):
         def work() -> None:
             remote_root = lib.remote_task_dir(self.config_data, task)
             video_paths = [Path(video_name) for video_name in videos]
+            local_model_dir = lib.task_root(self.config_data, task) / "models" / model
             job_ids: list[str] = []
             if sys.platform == "win32":
                 result = lib.submit_predict_single_ssh(
@@ -655,12 +656,32 @@ class PipelineApp(tk.Tk):
                     video_paths,
                     model,
                     preset,
+                    local_model_dir if local_model_dir.is_dir() else None,
                     emit=self.emit,
                     input_callback=self.auth_input,
                 )
                 job_ids = parse_job_ids(result.stdout)
             else:
                 lib.ssh(self.config_data, f"mkdir -p {remote_root}/videos {remote_root}/exports", emit=self.emit, input_callback=self.auth_input)
+                remote_model = f"{remote_root}/models/{model}"
+                model_check = lib.ssh(
+                    self.config_data,
+                    f"test -e {sh_quote(remote_model)}",
+                    emit=self.emit,
+                    check=False,
+                    input_callback=self.auth_input,
+                )
+                if model_check.returncode:
+                    if not local_model_dir.is_dir():
+                        raise FileNotFoundError(f"Model not found on GL and local model folder is missing: {local_model_dir}")
+                    self.emit(f"Uploading missing model to GL: {model}")
+                    lib.ssh(self.config_data, f"mkdir -p {remote_root}/models", emit=self.emit, input_callback=self.auth_input)
+                    lib.sftp_batch(
+                        self.config_data,
+                        [f"put -r {sftp_quote(local_model_dir)} {sftp_quote(remote_root + '/models')}"],
+                        emit=self.emit,
+                        input_callback=self.auth_input,
+                    )
                 for video in video_paths:
                     remote_video = f"{remote_root}/videos/{video.name}"
                     check = lib.ssh(
