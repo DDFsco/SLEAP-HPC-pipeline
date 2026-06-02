@@ -11,6 +11,8 @@ Built for the Rothschild Lab to make a GPU-backed SLEAP workflow usable by lab m
 
 ![SLEAP Pipeline Manager GUI](docs/gui_pipeline.png)
 
+New users can start with the [first-time user handout](docs/first_time_user_handout.md).
+
 ## What It Does
 
 SLEAP Pipeline Manager wraps the full labeling, training, inference, and review loop in a guided desktop interface:
