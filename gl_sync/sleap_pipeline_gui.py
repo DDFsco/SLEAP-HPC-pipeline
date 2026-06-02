@@ -794,14 +794,15 @@ class TrainingPackageDialog:
         packages: dict[str, list[Path]] = {}
         for task in lib.list_tasks(self.config):
             zips = lib.list_training_zips(self.config, task)
-            if zips:
-                packages[task] = zips
+            packages[task] = zips
         return packages
 
     def show(self) -> tuple[str, Path, str] | None:
         if not self.packages_by_task:
-            messagebox.showwarning("Train", "No training zip found under tasks/*/training_package/.", parent=self.parent)
-            return None
+            task_name = simpledialog.askstring("Train", "Task name", parent=self.parent)
+            if not task_name:
+                return None
+            self.packages_by_task[lib.safe_task_name(task_name)] = []
 
         self.window = tk.Toplevel(self.parent)
         self.window.title("Select Training Package")
@@ -816,6 +817,7 @@ class TrainingPackageDialog:
         ttk.Label(self.window, text="Training package").grid(row=1, column=0, sticky="w", padx=12, pady=6)
         self.package_combo = ttk.Combobox(self.window, textvariable=self.package_var, state="readonly")
         self.package_combo.grid(row=1, column=1, sticky="ew", padx=12, pady=6)
+        ttk.Button(self.window, text="Browse", command=self._browse_package).grid(row=1, column=2, sticky="ew", padx=(0, 12), pady=6)
 
         ttk.Label(self.window, text="Run name").grid(row=2, column=0, sticky="w", padx=12, pady=6)
         ttk.Entry(self.window, textvariable=self.run_var).grid(row=2, column=1, sticky="ew", padx=12, pady=6)
@@ -838,7 +840,7 @@ class TrainingPackageDialog:
         if self.window is None:
             return
         task = self.task_var.get()
-        package_names = [path.name for path in self.packages_by_task.get(task, [])]
+        package_names = [self._package_label(task, path) for path in self.packages_by_task.get(task, [])]
         if self.package_combo is None:
             return
         self.package_combo.configure(values=package_names)
@@ -847,6 +849,45 @@ class TrainingPackageDialog:
         else:
             self.package_var.set("")
         self._sync_run_name()
+
+    def _package_label(self, task: str, path: Path) -> str:
+        try:
+            return path.relative_to(lib.task_root(self.config, task)).as_posix()
+        except ValueError:
+            return str(path)
+
+    def _browse_package(self) -> None:
+        if self.window is None:
+            return
+        task = self.task_var.get()
+        initial_dir = lib.task_root(self.config, task) if task else self.config.local_project_path
+        path = filedialog.askopenfilename(
+            title="Select training package zip",
+            initialdir=str(initial_dir if initial_dir.exists() else self.config.local_project_path),
+            filetypes=[("Training packages", "*.zip"), ("All files", "*.*")],
+            parent=self.window,
+        )
+        if not path:
+            return
+        zip_file = Path(path)
+        task_root = self.config.local_project_path / "tasks"
+        matched_task = ""
+        try:
+            rel = zip_file.relative_to(task_root)
+            if rel.parts:
+                matched_task = lib.safe_task_name(rel.parts[0])
+        except ValueError:
+            matched_task = ""
+        if matched_task:
+            task = matched_task
+        elif not task:
+            task = lib.safe_task_name(zip_file.parent.name)
+        self.packages_by_task.setdefault(task, [])
+        if zip_file not in self.packages_by_task[task]:
+            self.packages_by_task[task].insert(0, zip_file)
+        self.task_var.set(task)
+        self._sync_packages()
+        self.package_var.set(self._package_label(task, zip_file))
 
     def _sync_run_name(self) -> None:
         task = lib.safe_task_name(self.task_var.get())
@@ -859,7 +900,7 @@ class TrainingPackageDialog:
         task = lib.safe_task_name(self.task_var.get())
         package_name = self.package_var.get()
         run_name = lib.safe_task_name(self.run_var.get())
-        zip_file = next((path for path in self.packages_by_task.get(task, []) if path.name == package_name), None)
+        zip_file = next((path for path in self.packages_by_task.get(task, []) if self._package_label(task, path) == package_name), None)
         if zip_file is None:
             messagebox.showerror("Train", "Select a training package.", parent=self.window)
             return
@@ -980,18 +1021,18 @@ class PredictionSelectionDialog:
 
     def _load_refs(self) -> dict[str, list[dict]]:
         refs_by_task: dict[str, list[dict]] = {}
+        for task in lib.list_tasks(self.config):
+            refs_by_task.setdefault(task, [])
         for ref in lib.list_prediction_refs(self.config):
             refs_by_task.setdefault(ref["task"], []).append(ref)
         return refs_by_task
 
     def show(self) -> tuple[str, str, str] | None:
         if not self.refs_by_task:
-            messagebox.showwarning(
-                self.title,
-                "No prediction outputs found. Submit a prediction job first.",
-                parent=self.parent,
-            )
-            return None
+            task_name = simpledialog.askstring(self.title, "Task name", parent=self.parent)
+            if not task_name:
+                return None
+            self.refs_by_task[lib.safe_task_name(task_name)] = []
 
         self.window = tk.Toplevel(self.parent)
         self.window.title(self.title)
@@ -1004,7 +1045,7 @@ class PredictionSelectionDialog:
         task_combo.grid(row=0, column=1, sticky="ew", padx=12, pady=(12, 6))
 
         ttk.Label(self.window, text="Prediction").grid(row=1, column=0, sticky="w", padx=12, pady=6)
-        self.file_combo = ttk.Combobox(self.window, textvariable=self.file_var, state="readonly")
+        self.file_combo = ttk.Combobox(self.window, textvariable=self.file_var)
         self.file_combo.grid(row=1, column=1, sticky="ew", padx=12, pady=6)
 
         ttk.Label(self.window, textvariable=self.detail_var, wraplength=560, foreground="#555").grid(
@@ -1029,14 +1070,17 @@ class PredictionSelectionDialog:
         if self.file_combo is None:
             return
         refs = self.refs_by_task.get(self.task_var.get(), [])
-        self.file_combo.configure(values=[ref["file"] for ref in refs])
-        self.file_var.set(refs[0]["file"] if refs else "")
+        self.file_combo.configure(values=[self._file_label(ref) for ref in refs])
+        self.file_var.set(self._file_label(refs[0]) if refs else "exports/")
         self._sync_detail()
+
+    def _file_label(self, ref: dict) -> str:
+        return ref.get("remote_rel") or ref.get("file", "")
 
     def _sync_detail(self) -> None:
         ref = self._selected_ref()
         if not ref:
-            self.detail_var.set("")
+            self.detail_var.set("Type a remote prediction path such as exports/video.predicted.slp.")
             return
         parts = [f"Source: {ref.get('source', '')}"]
         if ref.get("time"):
@@ -1054,14 +1098,23 @@ class PredictionSelectionDialog:
     def _selected_ref(self) -> dict | None:
         task = self.task_var.get()
         file_name = self.file_var.get()
-        return next((ref for ref in self.refs_by_task.get(task, []) if ref["file"] == file_name), None)
+        return next((ref for ref in self.refs_by_task.get(task, []) if self._file_label(ref) == file_name or ref["file"] == file_name), None)
 
     def _confirm(self) -> None:
         if self.window is None:
             return
         ref = self._selected_ref()
         if not ref:
-            messagebox.showerror(self.title, "Select a prediction output.", parent=self.window)
+            task = lib.safe_task_name(self.task_var.get())
+            remote_rel = self.file_var.get().strip().replace("\\", "/")
+            if not task or not remote_rel:
+                messagebox.showerror(self.title, "Select a prediction output.", parent=self.window)
+                return
+            file_name = Path(remote_rel).name
+            if "/" not in remote_rel:
+                remote_rel = f"exports/{remote_rel}"
+            self.result = (task, remote_rel, file_name)
+            self.window.destroy()
             return
         self.result = (lib.safe_task_name(ref["task"]), ref.get("remote_rel", f"exports/{ref['file']}"), ref["file"])
         self.window.destroy()

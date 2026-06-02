@@ -144,9 +144,8 @@ def list_training_zips(config: PipelineConfig, task: str | None = None) -> list[
     roots = [task_root(config, task)] if task else [task_root(config, t) for t in list_tasks(config)]
     zips: list[Path] = []
     for root in roots:
-        package_dir = root / "training_package"
-        if package_dir.exists():
-            zips.extend(sorted(package_dir.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True))
+        if root.exists():
+            zips.extend(sorted(root.rglob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True))
     return zips
 
 
@@ -258,17 +257,21 @@ def list_prediction_refs(config: PipelineConfig, task: str | None = None) -> lis
     for task_name in list_tasks(config):
         if task and safe_task_name(task_name) != safe_task_name(task):
             continue
-        exports_dir = task_root(config, task_name) / "exports"
-        if not exports_dir.exists():
+        task_dir = task_root(config, task_name)
+        if not task_dir.exists():
             continue
-        for export_file in sorted(exports_dir.glob("*.slp"), key=lambda p: p.stat().st_mtime, reverse=True):
+        for export_file in sorted(task_dir.rglob("*.slp"), key=lambda p: p.stat().st_mtime, reverse=True):
             clean_task = safe_task_name(task_name)
-            key = (clean_task, export_file.name)
+            try:
+                remote_rel = export_file.relative_to(task_dir).as_posix()
+            except ValueError:
+                remote_rel = f"exports/{export_file.name}"
+            key = (clean_task, remote_rel)
             refs[key] = {
                 **refs.get(key, {}),
                 "task": clean_task,
                 "file": export_file.name,
-                "remote_rel": refs.get(key, {}).get("remote_rel", f"exports/{export_file.name}"),
+                "remote_rel": refs.get(key, {}).get("remote_rel", remote_rel),
                 "source": "local export file",
                 "time": refs.get(key, {}).get("time", local_from_timestamp(export_file.stat().st_mtime)),
                 "path": str(export_file),
