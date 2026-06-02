@@ -652,16 +652,33 @@ class PipelineApp(tk.Tk):
         def work() -> None:
             remote_root = lib.remote_task_dir(self.config_data, task)
             video_paths = [Path(video_name) for video_name in videos]
-            local_model_dir = lib.task_root(self.config_data, task) / "models" / model
+            local_model_dir = lib.local_model_dir(self.config_data, task, model)
             job_ids: list[str] = []
             if sys.platform == "win32":
+                remote_model = f"{remote_root}/models/{model}"
+                self.emit(f"Checking GL model: {remote_model}")
+                model_check = lib.ssh(
+                    self.config_data,
+                    f"test -e {sh_quote(remote_model)}",
+                    emit=self.emit,
+                    check=False,
+                    input_callback=self.auth_input,
+                )
+                model_to_upload = None
+                if model_check.returncode:
+                    if local_model_dir is None:
+                        raise FileNotFoundError(f"Model not found on GL and local model folder is missing: tasks/{task}/models/{model}")
+                    self.emit(f"GL is missing model; bundling local model for upload: {local_model_dir}")
+                    model_to_upload = local_model_dir
+                else:
+                    self.emit(f"Model already exists on GL: {model}")
                 result = lib.submit_predict_single_ssh(
                     self.config_data,
                     remote_root,
                     video_paths,
                     model,
                     preset,
-                    local_model_dir if local_model_dir.is_dir() else None,
+                    model_to_upload,
                     emit=self.emit,
                     input_callback=self.auth_input,
                 )
@@ -677,8 +694,8 @@ class PipelineApp(tk.Tk):
                     input_callback=self.auth_input,
                 )
                 if model_check.returncode:
-                    if not local_model_dir.is_dir():
-                        raise FileNotFoundError(f"Model not found on GL and local model folder is missing: {local_model_dir}")
+                    if local_model_dir is None:
+                        raise FileNotFoundError(f"Model not found on GL and local model folder is missing: tasks/{task}/models/{model}")
                     self.emit(f"Uploading missing model to GL: {model}")
                     lib.ssh(self.config_data, f"mkdir -p {remote_root}/models", emit=self.emit, input_callback=self.auth_input)
                     lib.sftp_batch(

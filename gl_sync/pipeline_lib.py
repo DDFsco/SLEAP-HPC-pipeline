@@ -207,6 +207,19 @@ def list_model_refs(config: PipelineConfig, task: str | None = None) -> list[dic
     return sorted(refs.values(), key=lambda ref: ref.get("time", ""), reverse=True)
 
 
+def local_model_dir(config: PipelineConfig, task: str, model: str) -> Path | None:
+    clean_task = safe_task_name(task)
+    clean_model = safe_task_name(model)
+    for ref in list_model_refs(config, clean_task):
+        if safe_task_name(ref.get("model", "")) != clean_model:
+            continue
+        path = ref.get("path")
+        if path and Path(path).is_dir():
+            return Path(path)
+    fallback = task_root(config, clean_task) / "models" / clean_model
+    return fallback if fallback.is_dir() else None
+
+
 def list_prediction_refs(config: PipelineConfig, task: str | None = None) -> list[dict]:
     refs: dict[tuple[str, str], dict] = {}
     try:
@@ -1076,6 +1089,7 @@ def submit_predict_single_ssh(
         f"for video_name in {video_names}; do "
         'cp -f "$upload_dir/videos/$video_name" "$work/videos/$video_name"; '
         "done; "
+        'echo "Checking GL model: $work/models/$model_name"; '
         'if [[ ! -e "$work/models/$model_name" ]]; then '
         'if [[ -d "$upload_dir/models/$model_name" ]]; then '
         'mkdir -p "$work/models"; '
@@ -1085,6 +1099,8 @@ def submit_predict_single_ssh(
         'echo "Model not found on GL and no local model was bundled: $work/models/$model_name" >&2; '
         'exit 1; '
         'fi; '
+        'else '
+        'echo "Model already exists on GL: $model_name"; '
         'fi; '
         f"for video_name in {video_names}; do "
         f"SLEAP_SCRATCH_DIR={shlex.quote(task_remote_root)} "
