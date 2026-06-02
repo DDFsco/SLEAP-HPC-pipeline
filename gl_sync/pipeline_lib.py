@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import shlex
 import subprocess
@@ -11,6 +12,7 @@ import tempfile
 import threading
 import time
 import uuid
+import zipfile
 from io import BytesIO
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -996,6 +998,68 @@ def _tar_file_to_temp(paths: list[Path], arcname_for: Callable[[Path], str]) -> 
     return temp_path
 
 
+def _portable_training_package_zip_to_temp(
+    zip_file: Path,
+    emit: Callable[[str], None] | None = None,
+) -> tuple[Path, list[str]]:
+    emit = emit or (lambda line: None)
+    replacements: dict[str, str] = {}
+    files_to_add: dict[str, Path] = {}
+
+    def portable_arcname(path: Path) -> str:
+        base = f"pretrained/{safe_task_name(path.parent.name)}/{path.name}"
+        arcname = base
+        index = 2
+        while arcname in files_to_add and files_to_add[arcname] != path:
+            arcname = f"pretrained/{safe_task_name(path.parent.name)}_{index}/{path.name}"
+            index += 1
+        return arcname
+
+    def find_local_files(text: str) -> None:
+        for match in re.finditer(r"[A-Za-z]:[\\/][^\r\n'\"]+", text):
+            raw_path = match.group(0).strip()
+            local_path = Path(raw_path)
+            if not local_path.is_file():
+                continue
+            arcname = portable_arcname(local_path)
+            replacements[raw_path] = arcname
+            files_to_add[arcname] = local_path
+
+    with zipfile.ZipFile(zip_file, "r") as source:
+        entries = source.infolist()
+        for info in entries:
+            if info.filename.lower().endswith((".yaml", ".yml")):
+                find_local_files(source.read(info).decode("utf-8", errors="replace"))
+
+        if not replacements:
+            return zip_file, []
+
+        temp = tempfile.NamedTemporaryFile(prefix="sleap-training-portable-", suffix=".zip", delete=False)
+        temp_path = Path(temp.name)
+        temp.close()
+        try:
+            existing_names = {info.filename for info in entries}
+            with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED) as dest:
+                for info in entries:
+                    data = source.read(info.filename)
+                    if info.filename.lower().endswith((".yaml", ".yml")):
+                        text = data.decode("utf-8", errors="replace")
+                        for old_path, new_path in replacements.items():
+                            text = text.replace(old_path, new_path)
+                        data = text.encode("utf-8")
+                    dest.writestr(info, data)
+                for arcname, local_path in files_to_add.items():
+                    if arcname not in existing_names:
+                        dest.write(local_path, arcname=arcname)
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
+
+    for old_path, new_path in replacements.items():
+        emit(f"Bundled local checkpoint for GL training: {old_path} -> {new_path}")
+    return temp_path, list(replacements)
+
+
 def _predict_payload_tar_to_temp(videos: list[Path], model: str, local_model_dir: Path | None = None) -> Path:
     temp = tempfile.NamedTemporaryFile(prefix="sleap-predict-", suffix=".tar", delete=False)
     temp_path = Path(temp.name)
@@ -1078,7 +1142,8 @@ def submit_train_single_ssh(
     input_callback: InputCallback | None = None,
 ) -> subprocess.CompletedProcess[str]:
     zip_file = zip_file.resolve()
-    archive = _tar_file_bytes([zip_file], lambda path: path.name)
+    portable_zip, replacements = _portable_training_package_zip_to_temp(zip_file, emit=emit)
+    archive = _tar_file_bytes([portable_zip], lambda _path: zip_file.name)
     script_root = _remote_root_shell(config.gl_sync_remote)
     remote_command = (
         "set -e; "
@@ -1091,9 +1156,17 @@ def submit_train_single_ssh(
         f"{shlex.quote(zip_file.name)} {shlex.quote(run_name)}"
     )
     args = ["ssh", *ssh_multiplex_options(config), config.ssh_target, remote_command]
-    if input_callback and sys.platform == "win32":
-        return _run_binary_with_windows_askpass(args, archive, emit=emit)
-    return run_streaming_binary(args, archive, emit=emit)
+    try:
+        if replacements:
+            (emit or (lambda line: None))(
+                "Prepared portable training package with bundled local checkpoint file(s)."
+            )
+        if input_callback and sys.platform == "win32":
+            return _run_binary_with_windows_askpass(args, archive, emit=emit)
+        return run_streaming_binary(args, archive, emit=emit)
+    finally:
+        if portable_zip != zip_file:
+            portable_zip.unlink(missing_ok=True)
 
 
 def submit_predict_single_ssh(
