@@ -1252,8 +1252,12 @@ def bootstrap_local_dirs(config: PipelineConfig) -> None:
 
 def default_sleap_command() -> str:
     candidates = [
+        Path.home() / "sleap_gui_env" / "Scripts" / "sleap.exe",
+        Path.home() / "sleap_gui_env" / "Scripts" / "sleap-label.exe",
         Path.home() / "sleap_gui_env" / "bin" / "sleap",
         Path.home() / "sleap_gui_env" / "bin" / "sleap-label",
+        Path(os.environ.get("APPDATA", "")) / "uv" / "tools" / "sleap" / "Scripts" / "sleap.exe",
+        Path(os.environ.get("APPDATA", "")) / "uv" / "tools" / "sleap" / "Scripts" / "sleap-label.exe",
         "sleap",
         "sleap-label",
     ]
@@ -1264,6 +1268,28 @@ def default_sleap_command() -> str:
         except FileNotFoundError:
             continue
     return sys.executable
+
+
+def sleap_launch_env() -> dict[str, str]:
+    env = os.environ.copy()
+    script_dir = Path(__file__).resolve().parent
+    customize_src = script_dir / "sleap_sitecustomize.py"
+    customize_dir = Path(tempfile.gettempdir()) / "sleap_pipeline_sitecustomize"
+    customize_dst = customize_dir / "sitecustomize.py"
+    try:
+        customize_dir.mkdir(parents=True, exist_ok=True)
+        if customize_src.exists():
+            content = customize_src.read_text(encoding="utf-8")
+            if not customize_dst.exists() or customize_dst.read_text(encoding="utf-8") != content:
+                customize_dst.write_text(content, encoding="utf-8")
+        existing = env.get("PYTHONPATH", "")
+        paths = [str(customize_dir)]
+        if existing:
+            paths.append(existing)
+        env["PYTHONPATH"] = os.pathsep.join(paths)
+    except OSError:
+        pass
+    return env
 
 
 def local_video_record(path: Path) -> dict:

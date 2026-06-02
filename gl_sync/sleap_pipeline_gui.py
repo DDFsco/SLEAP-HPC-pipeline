@@ -522,12 +522,17 @@ class PipelineApp(tk.Tk):
             return
         labels_dir = lib.task_root(self.config_data, task) / "labels"
         cmd = self.config_data.sleap_label_cmd or lib.default_sleap_command()
+        label_files = sorted(labels_dir.glob("*.slp"), key=lambda path: path.stat().st_mtime, reverse=True)
+        target_file = label_files[0] if label_files else None
         try:
-            subprocess.Popen([cmd, str(labels_dir)])
+            if target_file:
+                subprocess.Popen([cmd, str(target_file)], env=lib.sleap_launch_env())
+            else:
+                subprocess.Popen([cmd], env=lib.sleap_launch_env())
         except FileNotFoundError as exc:
             messagebox.showerror("Open SLEAP", f"Could not launch SLEAP command: {cmd}\n{exc}")
             return
-        self.emit(f"Opened SLEAP for {labels_dir}")
+        self.emit(f"Opened SLEAP for {target_file or labels_dir}")
         messagebox.showinfo("Export Training Package", "After labeling, export the training package zip into this task's training_package folder.")
 
     def review_predictions(self) -> None:
@@ -541,10 +546,10 @@ class PipelineApp(tk.Tk):
         cmd = self.config_data.sleap_label_cmd or lib.default_sleap_command()
         try:
             if path:
-                subprocess.Popen([cmd, path])
+                subprocess.Popen([cmd, path], env=lib.sleap_launch_env())
                 self.emit(f"Opened prediction for review: {path}")
             else:
-                subprocess.Popen([cmd])
+                subprocess.Popen([cmd], env=lib.sleap_launch_env())
                 self.emit("Opened SLEAP for review.")
         except FileNotFoundError as exc:
             messagebox.showerror("Review Predictions", f"Could not launch SLEAP command: {cmd}\n{exc}")
