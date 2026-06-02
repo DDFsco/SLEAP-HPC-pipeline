@@ -39,6 +39,17 @@ def local_from_timestamp(timestamp: float) -> str:
     return datetime.fromtimestamp(timestamp).astimezone().isoformat(timespec="seconds")
 
 
+def format_bytes(size: int) -> str:
+    value = float(size)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if value < 1024 or unit == "GiB":
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} GiB"
+
+
 @dataclass
 class PipelineConfig:
     gl_user: str = ""
@@ -445,6 +456,8 @@ def run_streaming_file(
 ) -> subprocess.CompletedProcess[str]:
     emit = emit or (lambda line: None)
     emit(f"$ {shell_join(args)}")
+    total_bytes = input_path.stat().st_size
+    emit(f"Streaming upload: {format_bytes(total_bytes)}")
     proc = subprocess.Popen(
         args,
         env=env,
@@ -465,12 +478,32 @@ def run_streaming_file(
     reader = threading.Thread(target=read_output, daemon=True)
     reader.start()
     assert proc.stdin is not None
+    sent = 0
+    last_emit_bytes = 0
+    last_emit_time = time.monotonic()
+
+    def emit_progress(force: bool = False) -> None:
+        nonlocal last_emit_bytes, last_emit_time
+        now = time.monotonic()
+        if not force and sent < total_bytes and sent - last_emit_bytes < 64 * 1024 * 1024 and now - last_emit_time < 5:
+            return
+        if total_bytes:
+            percent = (sent / total_bytes) * 100
+            emit(f"Upload progress: {format_bytes(sent)} / {format_bytes(total_bytes)} ({percent:.0f}%)")
+        else:
+            emit(f"Upload progress: {format_bytes(sent)}")
+        last_emit_bytes = sent
+        last_emit_time = now
+
     with input_path.open("rb") as source:
         while True:
             chunk = source.read(1024 * 1024)
             if not chunk:
                 break
             proc.stdin.write(chunk)
+            sent += len(chunk)
+            emit_progress()
+    emit_progress(force=True)
     proc.stdin.close()
     code = proc.wait()
     reader.join(timeout=5)
@@ -1073,8 +1106,16 @@ def submit_predict_single_ssh(
     emit: Callable[[str], None] | None = None,
     input_callback: InputCallback | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    emit = emit or (lambda line: None)
     video_paths = [path.resolve() for path in videos]
     archive_path = _predict_payload_tar_to_temp(video_paths, model, local_model_dir)
+    model_included = local_model_dir is not None and local_model_dir.is_dir()
+    emit(
+        "Predict upload package: "
+        f"{len(video_paths)} video(s), "
+        f"model included: {'yes' if model_included else 'no'}, "
+        f"size {format_bytes(archive_path.stat().st_size)}"
+    )
     script_root = _remote_root_shell(config.gl_sync_remote)
     video_names = " ".join(shlex.quote(path.name) for path in video_paths)
     remote_command = (
