@@ -776,7 +776,11 @@ class PipelineApp(tk.Tk):
                         emit=self.emit,
                         input_callback=self.auth_input,
                     )
-            lib.mark_download(self.config_data, "prediction", {"task": task, "file": local_file.name, "path": str(local_file)})
+            lib.mark_download(
+                self.config_data,
+                "prediction",
+                {"task": task, "file": local_file.name, "remote_rel": remote_rel, "path": str(local_file)},
+            )
             self.after(0, self.refresh_history)
 
         self.run_threaded("Download Predictions", work, auth=True)
@@ -1118,14 +1122,33 @@ class PredictionSelectionDialog:
         self._sync_detail()
 
     def _file_label(self, ref: dict) -> str:
-        return ref.get("remote_rel") or ref.get("file", "")
+        remote_rel = ref.get("remote_rel") or ref.get("file", "")
+        if ref.get("downloaded"):
+            status = "Downloaded"
+        elif ref.get("local_exists"):
+            status = "Local"
+        else:
+            status = "Remote"
+        return f"[{status}] {remote_rel}"
+
+    def _plain_file_value(self, value: str) -> str:
+        value = value.strip()
+        if value.startswith("[") and "] " in value:
+            return value.split("] ", 1)[1].strip()
+        return value
 
     def _sync_detail(self) -> None:
         ref = self._selected_ref()
         if not ref:
             self.detail_var.set("Type a remote prediction path such as exports/video.predicted.slp.")
             return
-        parts = [f"Source: {ref.get('source', '')}"]
+        if ref.get("downloaded"):
+            status = "Downloaded"
+        elif ref.get("local_exists"):
+            status = "Already local"
+        else:
+            status = "Not downloaded"
+        parts = [f"Status: {status}", f"Source: {ref.get('source', '')}"]
         if ref.get("time"):
             parts.append(f"Time: {ref['time']}")
         if ref.get("job_id"):
@@ -1140,8 +1163,17 @@ class PredictionSelectionDialog:
 
     def _selected_ref(self) -> dict | None:
         task = self.task_var.get()
-        file_name = self.file_var.get()
-        return next((ref for ref in self.refs_by_task.get(task, []) if self._file_label(ref) == file_name or ref["file"] == file_name), None)
+        file_name = self._plain_file_value(self.file_var.get())
+        return next(
+            (
+                ref
+                for ref in self.refs_by_task.get(task, [])
+                if self._file_label(ref) == self.file_var.get()
+                or ref.get("remote_rel") == file_name
+                or ref["file"] == file_name
+            ),
+            None,
+        )
 
     def _confirm(self) -> None:
         if self.window is None:
@@ -1149,7 +1181,7 @@ class PredictionSelectionDialog:
         ref = self._selected_ref()
         if not ref:
             task = lib.safe_task_name(self.task_var.get())
-            remote_rel = self.file_var.get().strip().replace("\\", "/")
+            remote_rel = self._plain_file_value(self.file_var.get()).replace("\\", "/")
             if not task or not remote_rel:
                 messagebox.showerror(self.title, "Select a prediction output.", parent=self.window)
                 return

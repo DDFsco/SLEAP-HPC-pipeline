@@ -247,16 +247,19 @@ def list_prediction_refs(config: PipelineConfig, task: str | None = None) -> lis
             continue
         task_name = safe_task_name(job["task"])
         file_name = Path(job["expected_output"]).name
-        key = (task_name, file_name)
+        remote_rel = job.get("expected_output", f"exports/{file_name}")
+        key = (task_name, remote_rel)
         refs[key] = {
             "task": task_name,
             "file": file_name,
-            "remote_rel": job.get("expected_output", f"exports/{file_name}"),
+            "remote_rel": remote_rel,
             "source": "prediction history",
             "time": job.get("submitted_at", ""),
             "job_id": job.get("job_id", ""),
             "model": job.get("model", ""),
             "video": job.get("video", ""),
+            "downloaded": False,
+            "local_exists": (task_root(config, task_name) / remote_rel).is_file(),
         }
 
     for record in log.get("downloaded_predictions", []):
@@ -266,18 +269,24 @@ def list_prediction_refs(config: PipelineConfig, task: str | None = None) -> lis
             continue
         task_name = safe_task_name(record["task"])
         file_name = Path(record["file"]).name
-        key = (task_name, file_name)
+        remote_rel = (
+            record.get("remote_rel")
+            or refs.get((task_name, f"exports/{file_name}"), {}).get("remote_rel", f"exports/{file_name}")
+        )
+        key = (task_name, remote_rel)
         refs[key] = {
             **refs.get(key, {}),
             "task": task_name,
             "file": file_name,
-            "remote_rel": refs.get(key, {}).get("remote_rel", f"exports/{file_name}"),
+            "remote_rel": remote_rel,
             "source": "downloaded prediction",
             "time": record.get("downloaded_at", refs.get(key, {}).get("time", "")),
             "path": record.get("path", ""),
             "job_id": refs.get(key, {}).get("job_id", ""),
             "model": refs.get(key, {}).get("model", ""),
             "video": refs.get(key, {}).get("video", ""),
+            "downloaded": True,
+            "local_exists": bool(record.get("path") and Path(record["path"]).is_file()),
         }
 
     for task_name in list_tasks(config):
@@ -293,17 +302,23 @@ def list_prediction_refs(config: PipelineConfig, task: str | None = None) -> lis
             except ValueError:
                 remote_rel = f"exports/{export_file.name}"
             key = (clean_task, remote_rel)
+            is_downloaded = bool(refs.get(key, {}).get("downloaded", False))
             refs[key] = {
                 **refs.get(key, {}),
                 "task": clean_task,
                 "file": export_file.name,
                 "remote_rel": refs.get(key, {}).get("remote_rel", remote_rel),
-                "source": "local export file",
+                "source": refs.get(
+                    key,
+                    {},
+                ).get("source", "downloaded prediction" if is_downloaded else "local export file"),
                 "time": refs.get(key, {}).get("time", local_from_timestamp(export_file.stat().st_mtime)),
                 "path": str(export_file),
                 "job_id": refs.get(key, {}).get("job_id", ""),
                 "model": refs.get(key, {}).get("model", ""),
                 "video": refs.get(key, {}).get("video", ""),
+                "downloaded": is_downloaded,
+                "local_exists": True,
             }
 
     return sorted(refs.values(), key=lambda ref: ref.get("time", ""), reverse=True)
