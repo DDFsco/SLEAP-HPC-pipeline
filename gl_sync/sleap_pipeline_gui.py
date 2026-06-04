@@ -315,10 +315,6 @@ class PipelineApp(tk.Tk):
         self.after(100, self._drain_log_queue)
 
     def run_threaded(self, label: str, func, *, auth: bool = False) -> None:
-        if auth and sys.platform == "win32" and not self._prepare_windows_auth(label):
-            self._set_status_text(f"{label} cancelled")
-            return
-
         def worker() -> None:
             self._set_status_text(f"{label} running")
             try:
@@ -334,30 +330,6 @@ class PipelineApp(tk.Tk):
                 self.after(0, lambda: messagebox.showerror(label, str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
-
-    def _prepare_windows_auth(self, label: str) -> bool:
-        if lib.ssh_master_is_running(self.config_data):
-            return True
-        if lib.windows_auth_cache_has_password(self.config_data):
-            return True
-        password = simpledialog.askstring(
-            "Great Lakes Password",
-            (
-                "Enter your Great Lakes password for this SLEAP pipeline action.\n\n"
-                "The app will reuse it for SSH/SFTP commands during this GUI session, so you should not "
-                "have to enter the same password for each upload or remote command. Duo may still "
-                "ask for approval or a passcode when Great Lakes requires it."
-            ),
-            show="*",
-            parent=self,
-        )
-        if password is None:
-            return False
-        if not password:
-            messagebox.showwarning(label, "Great Lakes password was blank. Please try again.")
-            return False
-        lib.seed_windows_auth_cache(self.config_data, password)
-        return True
 
     def auth_input(self, prompt: str, secret: bool, default: str | None = None) -> str | None:
         done = threading.Event()
@@ -379,6 +351,7 @@ class PipelineApp(tk.Tk):
 
     def login_gl(self) -> None:
         self.save_settings()
+        self.emit("Connecting to Great Lakes. Authentication popups will show the terminal request when input is required.")
 
         def work() -> None:
             lib.bootstrap_local_dirs(self.config_data)

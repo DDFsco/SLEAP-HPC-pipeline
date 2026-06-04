@@ -566,7 +566,8 @@ def _ensure_windows_askpass_wrapper() -> str:
     wrapper = Path(tempfile.gettempdir()) / "sleap_ssh_askpass.cmd"
     pythonw = Path(sys.executable).with_name("pythonw.exe")
     launcher = str(pythonw) if pythonw.is_file() else sys.executable
-    content = f'@echo off\r\n"{launcher}" "{askpass_py}"\r\n'
+    # OpenSSH passes the actual authentication prompt as the first argument.
+    content = f'@echo off\r\n"{launcher}" "{askpass_py}" "%~1"\r\n'
     if not wrapper.exists() or wrapper.read_text(encoding="utf-8") != content:
         wrapper.write_text(content, encoding="utf-8")
     return str(wrapper)
