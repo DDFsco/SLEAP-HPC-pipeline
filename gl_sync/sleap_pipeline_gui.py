@@ -378,7 +378,12 @@ class PipelineApp(tk.Tk):
                     (
                         f"mkdir -p {sh_quote(tasks_root)} && "
                         f"chmod +x {sh_quote(remote_gl_sync)}/*.sh && "
-                        f"({install_script} --check || {install_script})"
+                        f"if {install_script} --check; then "
+                        "echo 'GL SLEAP environment already exists; skipping install.'; "
+                        "else "
+                        "echo 'GL SLEAP environment check failed; starting full install.'; "
+                        f"{install_script}; "
+                        "fi"
                     ),
                     emit=self.emit,
                     input_callback=self.auth_input,

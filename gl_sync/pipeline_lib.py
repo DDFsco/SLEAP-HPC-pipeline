@@ -454,13 +454,45 @@ def run_streaming_binary(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
-    output_bytes, _ = proc.communicate(input_bytes)
-    output = output_bytes.decode(errors="replace")
-    for line in output.splitlines():
-        emit(line.rstrip())
-    completed = subprocess.CompletedProcess(args, proc.returncode, output, "")
-    if check and proc.returncode:
-        raise subprocess.CalledProcessError(proc.returncode, args, output, "")
+    output_chunks: list[bytes] = []
+
+    def write_input() -> None:
+        assert proc.stdin is not None
+        try:
+            proc.stdin.write(input_bytes)
+        except (BrokenPipeError, OSError):
+            pass
+        finally:
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
+
+    writer = threading.Thread(target=write_input, daemon=True)
+    writer.start()
+    assert proc.stdout is not None
+    pending = b""
+    while True:
+        chunk = proc.stdout.read(4096)
+        if not chunk:
+            break
+        output_chunks.append(chunk)
+        pending += chunk
+        while b"\n" in pending:
+            line, pending = pending.split(b"\n", 1)
+            text = line.decode(errors="replace").rstrip("\r")
+            if text:
+                emit(text)
+    if pending:
+        text = pending.decode(errors="replace").rstrip("\r")
+        if text:
+            emit(text)
+    code = proc.wait()
+    writer.join(timeout=5)
+    output = b"".join(output_chunks).decode(errors="replace")
+    completed = subprocess.CompletedProcess(args, code, output, "")
+    if check and code:
+        raise subprocess.CalledProcessError(code, args, output, "")
     return completed
 
 
@@ -1136,7 +1168,12 @@ def bootstrap_gl_sync_single_ssh(
         'mkdir -p "$remote_root" "$tasks_root"; '
         'tar -xzf - -C "$remote_root"; '
         'chmod +x "$remote_root"/*.sh; '
-        '"$remote_root/install.sh" --check || "$remote_root/install.sh"'
+        'if "$remote_root/install.sh" --check; then '
+        'echo "GL SLEAP environment already exists; skipping install."; '
+        'else '
+        'echo "GL SLEAP environment check failed; starting full install."; '
+        '"$remote_root/install.sh"; '
+        "fi"
     )
     args = ["ssh", *ssh_multiplex_options(config), config.ssh_target, remote_command]
     if input_callback and sys.platform == "win32":
