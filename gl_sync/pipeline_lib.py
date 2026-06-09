@@ -471,20 +471,11 @@ def run_streaming_binary(
     writer = threading.Thread(target=write_input, daemon=True)
     writer.start()
     assert proc.stdout is not None
-    pending = b""
-    while True:
-        chunk = proc.stdout.read(4096)
-        if not chunk:
+    for raw_line in iter(proc.stdout.readline, b""):
+        if not raw_line:
             break
-        output_chunks.append(chunk)
-        pending += chunk
-        while b"\n" in pending:
-            line, pending = pending.split(b"\n", 1)
-            text = line.decode(errors="replace").rstrip("\r")
-            if text:
-                emit(text)
-    if pending:
-        text = pending.decode(errors="replace").rstrip("\r")
+        output_chunks.append(raw_line)
+        text = raw_line.decode(errors="replace").rstrip("\r\n")
         if text:
             emit(text)
     code = proc.wait()
@@ -1165,9 +1156,15 @@ def bootstrap_gl_sync_single_ssh(
         "set -e; "
         f"{_remote_assignment('remote_root', remote_root)}; "
         f"tasks_root={shlex.quote(tasks_root)}; "
-        'mkdir -p "$remote_root" "$tasks_root"; '
+        'echo "[bootstrap  10%] Connected to Great Lakes; preparing remote script folder."; '
+        'mkdir -p "$remote_root"; '
+        'echo "[bootstrap  25%] Receiving gl_sync scripts."; '
         'tar -xzf - -C "$remote_root"; '
+        'echo "[bootstrap  40%] Preparing Great Lakes task root on scratch."; '
+        'mkdir -p "$tasks_root"; '
+        'echo "[bootstrap  55%] Marking remote scripts executable."; '
         'chmod +x "$remote_root"/*.sh; '
+        'echo "[bootstrap  70%] Checking Great Lakes SLEAP environment."; '
         'if "$remote_root/install.sh" --check; then '
         'echo "GL SLEAP environment already exists; skipping install."; '
         'else '

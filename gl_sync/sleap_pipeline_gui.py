@@ -376,8 +376,11 @@ class PipelineApp(tk.Tk):
                 lib.ssh(
                     self.config_data,
                     (
+                        "echo '[bootstrap  40%] Preparing Great Lakes task root on scratch.' && "
                         f"mkdir -p {sh_quote(tasks_root)} && "
+                        "echo '[bootstrap  55%] Marking remote scripts executable.' && "
                         f"chmod +x {sh_quote(remote_gl_sync)}/*.sh && "
+                        "echo '[bootstrap  70%] Checking Great Lakes SLEAP environment.' && "
                         f"if {install_script} --check; then "
                         "echo 'GL SLEAP environment already exists; skipping install.'; "
                         "else "
