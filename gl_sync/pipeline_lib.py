@@ -739,7 +739,7 @@ def prompt_kind(text: str) -> tuple[str, bool, str | None] | None:
     if "password:" in tail:
         return ("Great Lakes password", True, None)
     if "passcode" in tail:
-        return ("Duo passcode", False, None)
+        return ("Okta/MFA passcode", False, None)
     if "verification code" in tail:
         return ("Verification code", False, None)
     if "keyboard-interactive" in tail and tail.rstrip().endswith(":"):

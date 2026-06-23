@@ -58,16 +58,16 @@ def _prompt_kind(step: int, password_retry: bool = False) -> tuple[str, bool, st
                 False,
                 "hostkey",
             )
-        if "passcode" in lower or "verification code" in lower or "duo" in lower:
+        if "passcode" in lower or "verification code" in lower or "okta" in lower or "mfa" in lower:
             return (
                 _with_terminal_request(
-                    "Great Lakes Duo verification",
+                    "Great Lakes Okta/MFA verification",
                     prompt,
-                    "Enter the requested Duo code or option number. If Great Lakes offers a push option, "
+                    "Enter the requested Okta/MFA code or option number. If Great Lakes offers a push option, "
                     "enter that option number and approve the notification.",
                 ),
                 False,
-                "duo",
+                "mfa",
             )
         if "password" in lower:
             if password_retry:
@@ -119,15 +119,15 @@ def _prompt_kind(step: int, password_retry: bool = False) -> tuple[str, bool, st
             "password",
         )
     return (
-        _with_terminal_request(
-            "Great Lakes Duo verification",
-            "",
-            "Enter your Duo passcode or the option number requested by Great Lakes. "
-            "Duo prompts cannot be reused like your password.",
-        ),
-        False,
-        "duo",
-    )
+            _with_terminal_request(
+                "Great Lakes Okta/MFA verification",
+                "",
+                "Enter your Okta/MFA passcode or the option number requested by Great Lakes. "
+                "MFA prompts cannot be reused like your password.",
+            ),
+            False,
+            "mfa",
+        )
 
 
 def _ask_response(root, title: str, message: str, secret: bool, initial: str = "") -> str | None:
@@ -234,7 +234,7 @@ def main() -> int:
     initial = "yes" if kind == "hostkey" else ""
     title = {
         "password": "Great Lakes Password",
-        "duo": "Great Lakes Duo Verification",
+        "mfa": "Great Lakes Okta/MFA Verification",
         "hostkey": "SSH Host Key Confirmation",
     }.get(kind, "Great Lakes Authentication")
     value = _ask_response(root, title, message, secret, initial)

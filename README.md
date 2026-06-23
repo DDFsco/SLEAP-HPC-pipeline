@@ -26,14 +26,14 @@ SLEAP Pipeline Manager wraps the full labeling, training, inference, and review 
 7. Download `.slp` prediction files.
 8. Re-open predictions for review/correction in SLEAP.
 
-The app keeps local and remote task folders aligned, tracks submitted jobs in local history, and prompts users through SSH password/Duo authentication when Great Lakes requires interactive input.
+The app keeps local and remote task folders aligned, tracks submitted jobs in local history, and prompts users through SSH password/Okta MFA authentication when Great Lakes requires interactive input.
 
 ## Highlights
 
 - **Guided lab workflow:** Step-card GUI for labeling, training, prediction, downloading, and review.
 - **Great Lakes integration:** Uploads scripts/configs, bootstraps the remote environment, and submits Slurm jobs.
-- **Interactive SSH auth:** Detects password, Duo, passcode, host-key, and verification prompts and surfaces them as GUI dialogs.
-- **SSH connection reuse:** Uses OpenSSH ControlMaster to reduce repeated password/Duo prompts during one workflow session.
+- **Interactive SSH auth:** Detects password, Okta/MFA passcode, host-key, and verification prompts and surfaces them as GUI dialogs.
+- **SSH connection reuse:** Uses OpenSSH ControlMaster to reduce repeated password/Okta MFA prompts during one workflow session.
 - **Task-based organization:** Mirrors `tasks/{task}` locally and under Great Lakes scratch.
 - **Model and prediction pickers:** Uses history and local files to provide dropdown selections instead of relying on users to remember run names.
 - **Configurable inference presets:** Reads predict configs from `gl_sync/inference/`, so new inference profiles can be added without changing GUI code.
@@ -220,7 +220,7 @@ This project demonstrates:
 
 - Slurm job completion is visible through `Show Slurm Jobs`, but the GUI does not yet continuously poll and update job status.
 - Windows `.exe` builds should be produced on Windows.
-- Great Lakes account, Slurm allocation, and Duo setup are required for remote training/prediction.
+- Great Lakes account, Slurm allocation, and Okta MFA setup are required for remote training/prediction.
 
 ## Roadmap
 

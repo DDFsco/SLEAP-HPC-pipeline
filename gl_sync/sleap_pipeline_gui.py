@@ -337,7 +337,7 @@ class PipelineApp(tk.Tk):
 
         def ask() -> None:
             result["value"] = simpledialog.askstring(
-                "Great Lakes Authentication",
+                "Great Lakes / Okta Authentication",
                 prompt,
                 initialvalue=default or "",
                 show="*" if secret else None,
@@ -729,18 +729,21 @@ class PipelineApp(tk.Tk):
 
     def download_predictions(self) -> None:
         self.save_settings()
-        selection = PredictionSelectionDialog(self, self.config_data, title="Select Prediction to Download").show()
-        if selection is None:
+        selections = PredictionSelectionDialog(self, self.config_data, title="Select Predictions to Download").show()
+        if not selections:
             return
-        task, remote_rel, file_name = selection
 
         def work() -> None:
-            root = lib.ensure_task(self.config_data, task)
-            local_exports = root / "exports"
-            local_file = local_exports / file_name
-            if local_file.exists():
-                self.emit(f"skip download: {local_file} already exists")
-            else:
+            downloaded = 0
+            skipped = 0
+            for task, remote_rel, file_name in selections:
+                root = lib.ensure_task(self.config_data, task)
+                local_exports = root / "exports"
+                local_file = local_exports / file_name
+                if local_file.exists():
+                    skipped += 1
+                    self.emit(f"skip download: {local_file} already exists")
+                    continue
                 remote_file = f"{lib.remote_task_dir(self.config_data, task)}/{remote_rel}"
                 if sys.platform == "win32":
                     lib.download_remote_path_tar(
@@ -757,11 +760,13 @@ class PipelineApp(tk.Tk):
                         emit=self.emit,
                         input_callback=self.auth_input,
                     )
-            lib.mark_download(
-                self.config_data,
-                "prediction",
-                {"task": task, "file": local_file.name, "remote_rel": remote_rel, "path": str(local_file)},
-            )
+                lib.mark_download(
+                    self.config_data,
+                    "prediction",
+                    {"task": task, "file": local_file.name, "remote_rel": remote_rel, "path": str(local_file)},
+                )
+                downloaded += 1
+            self.emit(f"Prediction download complete: {downloaded} downloaded, {skipped} skipped.")
             self.after(0, self.refresh_history)
 
         self.run_threaded("Download Predictions", work, auth=True)
@@ -1039,12 +1044,12 @@ class PredictionSelectionDialog:
         self.parent = parent
         self.config = config
         self.title = title
-        self.result: tuple[str, str, str] | None = None
+        self.result: list[tuple[str, str, str]] | None = None
         self.window: tk.Toplevel | None = None
         self.task_var = tk.StringVar()
-        self.file_var = tk.StringVar()
+        self.manual_var = tk.StringVar()
         self.detail_var = tk.StringVar()
-        self.file_combo: ttk.Combobox | None = None
+        self.file_listbox: tk.Listbox | None = None
         self.refs_by_task = self._load_refs()
 
     def _load_refs(self) -> dict[str, list[dict]]:
@@ -1055,7 +1060,7 @@ class PredictionSelectionDialog:
             refs_by_task.setdefault(ref["task"], []).append(ref)
         return refs_by_task
 
-    def show(self) -> tuple[str, str, str] | None:
+    def show(self) -> list[tuple[str, str, str]] | None:
         if not self.refs_by_task:
             task_name = simpledialog.askstring(self.title, "Task name", parent=self.parent)
             if not task_name:
@@ -1072,21 +1077,39 @@ class PredictionSelectionDialog:
         task_combo = ttk.Combobox(self.window, textvariable=self.task_var, values=list(self.refs_by_task), state="readonly")
         task_combo.grid(row=0, column=1, sticky="ew", padx=12, pady=(12, 6))
 
-        ttk.Label(self.window, text="Prediction").grid(row=1, column=0, sticky="w", padx=12, pady=6)
-        self.file_combo = ttk.Combobox(self.window, textvariable=self.file_var)
-        self.file_combo.grid(row=1, column=1, sticky="ew", padx=12, pady=6)
+        ttk.Label(self.window, text="Predictions").grid(row=1, column=0, sticky="nw", padx=12, pady=6)
+        file_frame = ttk.Frame(self.window)
+        file_frame.grid(row=1, column=1, sticky="nsew", padx=12, pady=6)
+        file_frame.columnconfigure(0, weight=1)
+        file_frame.rowconfigure(0, weight=1)
+        self.window.rowconfigure(1, weight=1)
+        self.file_listbox = tk.Listbox(file_frame, selectmode="extended", height=8, exportselection=False)
+        file_scroll = ttk.Scrollbar(file_frame, orient="vertical", command=self.file_listbox.yview)
+        self.file_listbox.configure(yscrollcommand=file_scroll.set)
+        self.file_listbox.grid(row=0, column=0, sticky="nsew")
+        file_scroll.grid(row=0, column=1, sticky="ns")
 
         ttk.Label(self.window, textvariable=self.detail_var, wraplength=560, foreground="#555").grid(
             row=2, column=0, columnspan=2, sticky="ew", padx=12, pady=6
         )
 
+        ttk.Label(self.window, text="Extra remote paths").grid(row=3, column=0, sticky="w", padx=12, pady=6)
+        ttk.Entry(self.window, textvariable=self.manual_var).grid(row=3, column=1, sticky="ew", padx=12, pady=6)
+        ttk.Label(
+            self.window,
+            text="Optional. Separate multiple paths with commas, spaces, or new lines. Example: exports/video.predicted.slp",
+            wraplength=560,
+            foreground="#555",
+        ).grid(row=4, column=0, columnspan=2, sticky="ew", padx=12, pady=(0, 6))
+
         button_row = ttk.Frame(self.window)
-        button_row.grid(row=3, column=0, columnspan=2, sticky="e", padx=12, pady=(8, 12))
-        ttk.Button(button_row, text="Cancel", command=self.window.destroy).grid(row=0, column=0, padx=(0, 6))
-        ttk.Button(button_row, text="Download", command=self._confirm).grid(row=0, column=1)
+        button_row.grid(row=5, column=0, columnspan=2, sticky="e", padx=12, pady=(8, 12))
+        ttk.Button(button_row, text="Select All", command=self._select_all).grid(row=0, column=0, padx=(0, 6))
+        ttk.Button(button_row, text="Cancel", command=self.window.destroy).grid(row=0, column=1, padx=(0, 6))
+        ttk.Button(button_row, text="Download", command=self._confirm).grid(row=0, column=2)
 
         task_combo.bind("<<ComboboxSelected>>", lambda _event: self._sync_files())
-        self.file_combo.bind("<<ComboboxSelected>>", lambda _event: self._sync_detail())
+        self.file_listbox.bind("<<ListboxSelect>>", lambda _event: self._sync_detail())
         first_task = next(iter(self.refs_by_task))
         self.task_var.set(first_task)
         self._sync_files()
@@ -1095,11 +1118,14 @@ class PredictionSelectionDialog:
         return self.result
 
     def _sync_files(self) -> None:
-        if self.file_combo is None:
+        if self.file_listbox is None:
             return
         refs = self.refs_by_task.get(self.task_var.get(), [])
-        self.file_combo.configure(values=[self._file_label(ref) for ref in refs])
-        self.file_var.set(self._file_label(refs[0]) if refs else "exports/")
+        self.file_listbox.delete(0, "end")
+        for ref in refs:
+            self.file_listbox.insert("end", self._file_label(ref))
+        if refs:
+            self.file_listbox.selection_set(0)
         self._sync_detail()
 
     def _file_label(self, ref: dict) -> str:
@@ -1119,10 +1145,14 @@ class PredictionSelectionDialog:
         return value
 
     def _sync_detail(self) -> None:
-        ref = self._selected_ref()
-        if not ref:
-            self.detail_var.set("Type a remote prediction path such as exports/video.predicted.slp.")
+        refs = self._selected_refs()
+        if not refs:
+            self.detail_var.set("Select known prediction files, or type remote paths below.")
             return
+        if len(refs) > 1:
+            self.detail_var.set(f"{len(refs)} prediction files selected.")
+            return
+        ref = refs[0]
         if ref.get("downloaded"):
             status = "Downloaded"
         elif ref.get("local_exists"):
@@ -1142,37 +1172,45 @@ class PredictionSelectionDialog:
             parts.append(f"Path: {ref['path']}")
         self.detail_var.set(" | ".join(parts))
 
-    def _selected_ref(self) -> dict | None:
+    def _selected_refs(self) -> list[dict]:
+        if self.file_listbox is None:
+            return []
         task = self.task_var.get()
-        file_name = self._plain_file_value(self.file_var.get())
-        return next(
-            (
-                ref
-                for ref in self.refs_by_task.get(task, [])
-                if self._file_label(ref) == self.file_var.get()
-                or ref.get("remote_rel") == file_name
-                or ref["file"] == file_name
-            ),
-            None,
-        )
+        refs = self.refs_by_task.get(task, [])
+        return [refs[index] for index in self.file_listbox.curselection() if index < len(refs)]
+
+    def _select_all(self) -> None:
+        if self.file_listbox is None:
+            return
+        self.file_listbox.selection_set(0, "end")
+        self._sync_detail()
+
+    def _manual_selections(self) -> list[tuple[str, str, str]]:
+        task = lib.safe_task_name(self.task_var.get())
+        raw = self.manual_var.get().replace(",", " ").replace(";", " ").replace("\n", " ")
+        selections: list[tuple[str, str, str]] = []
+        for value in raw.split():
+            remote_rel = self._plain_file_value(value).replace("\\", "/")
+            if not remote_rel:
+                continue
+            if "/" not in remote_rel:
+                remote_rel = f"exports/{remote_rel}"
+            selections.append((task, remote_rel, Path(remote_rel).name))
+        return selections
 
     def _confirm(self) -> None:
         if self.window is None:
             return
-        ref = self._selected_ref()
-        if not ref:
-            task = lib.safe_task_name(self.task_var.get())
-            remote_rel = self._plain_file_value(self.file_var.get()).replace("\\", "/")
-            if not task or not remote_rel:
-                messagebox.showerror(self.title, "Select a prediction output.", parent=self.window)
-                return
-            file_name = Path(remote_rel).name
-            if "/" not in remote_rel:
-                remote_rel = f"exports/{remote_rel}"
-            self.result = (task, remote_rel, file_name)
-            self.window.destroy()
+        refs = self._selected_refs()
+        selections = [
+            (lib.safe_task_name(ref["task"]), ref.get("remote_rel", f"exports/{ref['file']}"), ref["file"])
+            for ref in refs
+        ]
+        selections.extend(self._manual_selections())
+        if not selections:
+            messagebox.showerror(self.title, "Select one or more prediction outputs.", parent=self.window)
             return
-        self.result = (lib.safe_task_name(ref["task"]), ref.get("remote_rel", f"exports/{ref['file']}"), ref["file"])
+        self.result = selections
         self.window.destroy()
 
 

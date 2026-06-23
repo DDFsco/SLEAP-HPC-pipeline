@@ -9,7 +9,7 @@ The app is designed so you do not need to type SSH, SFTP, Slurm, or Great Lakes 
 - A working University of Michigan Great Lakes account.
 - Your Great Lakes uniqname.
 - Your Slurm account name.
-- Access to Duo or any other Great Lakes login verification method.
+- Access to Okta/MFA or any other Great Lakes login verification method.
 - The SLEAP Pipeline Manager project folder on your computer.
 - A local SLEAP GUI environment installed by the project installer.
 - Video files you want to label or predict.
@@ -65,9 +65,9 @@ The app will:
 - check or install the remote SLEAP environment,
 - prepare Great Lakes for training and prediction.
 
-During login, Great Lakes may ask for a password, Duo approval, passcode, or host-key confirmation. The app will show a popup when it needs input.
+During login, Great Lakes may ask for a password, Okta/MFA approval, passcode, or host-key confirmation. The app will show a popup when it needs input.
 
-On Windows, the app tries to ask for the Great Lakes password once per GUI session and reuse it for later actions. Duo prompts may still appear when Great Lakes requires verification.
+On Windows, the app tries to ask for the Great Lakes password once per GUI session and reuse it for later actions. Okta/MFA prompts may still appear when Great Lakes requires verification.
 
 ## Task Folder Layout
 
@@ -244,11 +244,11 @@ Try logging into Great Lakes from a normal terminal first:
 ssh uniqname@greatlakes.arc-ts.umich.edu
 ```
 
-If that fails, the issue is with the Great Lakes account, password, Duo, SSH setup, or access permissions.
+If that fails, the issue is with the Great Lakes account, password, Okta/MFA, SSH setup, or access permissions.
 
 ### The app asks for verification more than once
 
-Great Lakes controls authentication. The app reduces repeated prompts where possible, but Duo or verification prompts may still appear when Great Lakes requires them.
+Great Lakes controls authentication. The app reduces repeated prompts where possible, but Okta/MFA or verification prompts may still appear when Great Lakes requires them.
 
 On Windows, keep the same GUI window open during the workflow so the temporary password cache can be reused.
 
@@ -306,4 +306,3 @@ After this test works, move to larger datasets.
 - Wait for the Slurm prediction job to finish.
 - Click `Download Predictions`.
 - Click `Review Predictions`.
-
