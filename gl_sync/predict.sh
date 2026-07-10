@@ -50,10 +50,15 @@ VIDEO_PATH="$WORK/$VIDEO_REL"
 MODEL_PATH="$WORK/$MODEL_REL"
 BASE="$(basename "$VIDEO_PATH")"
 STEM="${BASE%.*}"
+SAFE_STEM="$(printf "%s" "$STEM" | tr -c "A-Za-z0-9_.-" "_")"
+SAFE_STEM="${SAFE_STEM:0:80}"
+if [[ -z "$SAFE_STEM" ]]; then
+  SAFE_STEM="video"
+fi
 OUT_PATH="$WORK/exports/${STEM}.predicted.slp"
 JOB_DIR="$WORK/jobs"
 LOG_DIR="$WORK/logs"
-JOB_FILE="$JOB_DIR/predict_${STEM}.sbatch"
+JOB_FILE="$JOB_DIR/predict_${SAFE_STEM}.sbatch"
 
 if [[ ! -f "$VIDEO_PATH" ]]; then
   echo "Video not found: $VIDEO_PATH" >&2
@@ -68,14 +73,14 @@ mkdir -p "$WORK/exports" "$JOB_DIR" "$LOG_DIR"
 
 cat > "$JOB_FILE" <<EOF
 #!/usr/bin/env bash
-#SBATCH --job-name=sleap_predict_${STEM}
+#SBATCH --job-name=sleap_predict_${SAFE_STEM}
 #SBATCH --partition=${SLEAP_PARTITION}
 #SBATCH --gres=gpu:${SLEAP_GPUS}
 #SBATCH --cpus-per-task=${SLEAP_CPUS}
 #SBATCH --mem=${SLEAP_MEM}
 #SBATCH --time=${SLEAP_TIME}
-#SBATCH --output=${LOG_DIR}/predict_${STEM}_%j.out
-#SBATCH --error=${LOG_DIR}/predict_${STEM}_%j.err
+#SBATCH --output=${LOG_DIR}/predict_${SAFE_STEM}_%j.out
+#SBATCH --error=${LOG_DIR}/predict_${SAFE_STEM}_%j.err
 $(sbatch_account_args)
 $(sbatch_mail_args)
 
