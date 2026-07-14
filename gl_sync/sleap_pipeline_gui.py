@@ -636,6 +636,19 @@ class PipelineApp(tk.Tk):
             local_model_dir = lib.local_model_dir(self.config_data, task, model)
             job_ids: list[str] = []
             if sys.platform == "win32":
+                videos_to_upload: list[Path] = []
+                for video in video_paths:
+                    remote_video = f"{remote_root}/videos/{video.name}"
+                    remote_size = lib.remote_file_size(
+                        self.config_data,
+                        remote_video,
+                        emit=self.emit,
+                        input_callback=self.auth_input,
+                    )
+                    if remote_size == video.stat().st_size:
+                        self.emit(f"skip upload: {video.name} (same size on GL)")
+                    else:
+                        videos_to_upload.append(video)
                 remote_model = f"{remote_root}/models/{model}"
                 self.emit(f"Checking GL model: {remote_model}")
                 model_check = lib.ssh(
@@ -657,6 +670,7 @@ class PipelineApp(tk.Tk):
                     self.config_data,
                     remote_root,
                     video_paths,
+                    videos_to_upload,
                     model,
                     preset,
                     model_to_upload,
@@ -687,14 +701,13 @@ class PipelineApp(tk.Tk):
                     )
                 for video in video_paths:
                     remote_video = f"{remote_root}/videos/{video.name}"
-                    check = lib.ssh(
+                    remote_size = lib.remote_file_size(
                         self.config_data,
-                        f"test -f {sh_quote(remote_video)} && stat -c %s {sh_quote(remote_video)} || echo missing",
+                        remote_video,
                         emit=self.emit,
-                        check=False,
                         input_callback=self.auth_input,
                     )
-                    if str(video.stat().st_size) in check.stdout.split():
+                    if remote_size == video.stat().st_size:
                         self.emit(f"skip upload: {video.name} (same size on GL)")
                     else:
                         lib.sftp_batch(

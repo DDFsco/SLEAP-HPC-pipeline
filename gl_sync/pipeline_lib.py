@@ -1119,6 +1119,32 @@ def _predict_payload_tar_to_temp(videos: list[Path], model: str, local_model_dir
     return temp_path
 
 
+def remote_file_size(
+    config: PipelineConfig,
+    remote_path: str,
+    emit: Callable[[str], None] | None = None,
+    input_callback: InputCallback | None = None,
+) -> int | None:
+    start = "__SLEAP_SIZE_START__"
+    end = "__SLEAP_SIZE_END__"
+    result = ssh(
+        config,
+        (
+            f"printf {shlex.quote(start)}; "
+            f"test -f {shlex.quote(remote_path)} && stat -c %s {shlex.quote(remote_path)} || printf missing; "
+            f"printf {shlex.quote(end)}"
+        ),
+        emit=emit,
+        check=False,
+        input_callback=input_callback,
+    )
+    output = result.stdout
+    if start in output and end in output:
+        value = output.split(start, 1)[1].split(end, 1)[0].strip()
+        return int(value) if value.isdigit() else None
+    return None
+
+
 def _remote_root_shell(remote_spec: str) -> str:
     remote_spec = remote_spec.rstrip("/")
     if remote_spec == "~":
@@ -1223,6 +1249,7 @@ def submit_predict_single_ssh(
     config: PipelineConfig,
     task_remote_root: str,
     videos: list[Path],
+    videos_to_upload: list[Path],
     model: str,
     preset: str,
     local_model_dir: Path | None = None,
@@ -1231,16 +1258,26 @@ def submit_predict_single_ssh(
 ) -> subprocess.CompletedProcess[str]:
     emit = emit or (lambda line: None)
     video_paths = [path.resolve() for path in videos]
-    archive_path = _predict_payload_tar_to_temp(video_paths, model, local_model_dir)
+    upload_video_paths = [path.resolve() for path in videos_to_upload]
+    archive_path = _predict_payload_tar_to_temp(upload_video_paths, model, local_model_dir)
     model_included = local_model_dir is not None and local_model_dir.is_dir()
     emit(
         "Predict upload package: "
-        f"{len(video_paths)} video(s), "
+        f"{len(upload_video_paths)} video(s), "
         f"model included: {'yes' if model_included else 'no'}, "
         f"size {format_bytes(archive_path.stat().st_size)}"
     )
     script_root = _remote_root_shell(config.gl_sync_remote)
     video_names = " ".join(shlex.quote(path.name) for path in video_paths)
+    upload_video_names = " ".join(shlex.quote(path.name) for path in upload_video_paths)
+    copy_uploaded_videos = ""
+    if upload_video_names:
+        copy_uploaded_videos = (
+            f"for video_name in {upload_video_names}; do "
+            'cp -f "$upload_dir/videos/$video_name" "$work/videos/$video_name"; '
+            'echo "Uploaded video to GL: $video_name"; '
+            "done; "
+        )
     remote_command = (
         "set -e; "
         f"work={shlex.quote(task_remote_root)}; "
@@ -1250,9 +1287,7 @@ def submit_predict_single_ssh(
         'trap \'rm -rf "$upload_dir"\' EXIT; '
         'mkdir -p "$work/videos" "$work/exports"; '
         'tar -xf - -C "$upload_dir"; '
-        f"for video_name in {video_names}; do "
-        'cp -f "$upload_dir/videos/$video_name" "$work/videos/$video_name"; '
-        "done; "
+        f"{copy_uploaded_videos}"
         'echo "Checking GL model: $work/models/$model_name"; '
         'if [[ ! -e "$work/models/$model_name" ]]; then '
         'if [[ -d "$upload_dir/models/$model_name" ]]; then '
