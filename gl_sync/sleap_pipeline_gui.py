@@ -743,6 +743,7 @@ class PipelineApp(tk.Tk):
         def work() -> None:
             downloaded = 0
             skipped = 0
+            pending_by_task: dict[str, list[tuple[str, str, Path]]] = {}
             for task, remote_rel, file_name in selections:
                 root = lib.ensure_task(self.config_data, task)
                 local_exports = root / "exports"
@@ -751,28 +752,48 @@ class PipelineApp(tk.Tk):
                     skipped += 1
                     self.emit(f"skip download: {local_file} already exists")
                     continue
-                remote_file = f"{lib.remote_task_dir(self.config_data, task)}/{remote_rel}"
-                if sys.platform == "win32":
-                    lib.download_remote_path_tar(
+                pending_by_task.setdefault(task, []).append((remote_rel, file_name, local_file))
+
+            if sys.platform == "win32":
+                for task, pending in pending_by_task.items():
+                    root = lib.ensure_task(self.config_data, task)
+                    local_exports = root / "exports"
+                    remote_files = [f"{lib.remote_task_dir(self.config_data, task)}/{remote_rel}" for remote_rel, _, _ in pending]
+                    self.emit(f"Downloading {len(remote_files)} prediction file(s) from GL task {task}.")
+                    lib.download_remote_paths_tar(
                         self.config_data,
-                        remote_file,
+                        remote_files,
                         local_exports,
                         emit=self.emit,
                         input_callback=self.auth_input,
                     )
-                else:
-                    lib.sftp_batch(
-                        self.config_data,
-                        [f"get {sftp_quote(remote_file)} {sftp_quote(local_file)}"],
-                        emit=self.emit,
-                        input_callback=self.auth_input,
-                    )
-                lib.mark_download(
-                    self.config_data,
-                    "prediction",
-                    {"task": task, "file": local_file.name, "remote_rel": remote_rel, "path": str(local_file)},
-                )
-                downloaded += 1
+                    for remote_rel, file_name, local_file in pending:
+                        if not local_file.exists():
+                            raise FileNotFoundError(f"Downloaded prediction was not found locally: {local_file}")
+                        lib.mark_download(
+                            self.config_data,
+                            "prediction",
+                            {"task": task, "file": file_name, "remote_rel": remote_rel, "path": str(local_file)},
+                        )
+                        downloaded += 1
+            else:
+                for task, pending in pending_by_task.items():
+                    root = lib.ensure_task(self.config_data, task)
+                    local_exports = root / "exports"
+                    for remote_rel, file_name, local_file in pending:
+                        remote_file = f"{lib.remote_task_dir(self.config_data, task)}/{remote_rel}"
+                        lib.sftp_batch(
+                            self.config_data,
+                            [f"get {sftp_quote(remote_file)} {sftp_quote(local_file)}"],
+                            emit=self.emit,
+                            input_callback=self.auth_input,
+                        )
+                        lib.mark_download(
+                            self.config_data,
+                            "prediction",
+                            {"task": task, "file": file_name, "remote_rel": remote_rel, "path": str(local_file)},
+                        )
+                        downloaded += 1
             self.emit(f"Prediction download complete: {downloaded} downloaded, {skipped} skipped.")
             self.after(0, self.refresh_history)
 

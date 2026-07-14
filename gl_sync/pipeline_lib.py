@@ -1443,6 +1443,60 @@ def download_remote_path_tar(
         output.unlink(missing_ok=True)
 
 
+def download_remote_paths_tar(
+    config: PipelineConfig,
+    remote_paths: list[str],
+    local_parent: Path,
+    emit: Callable[[str], None] | None = None,
+    input_callback: InputCallback | None = None,
+) -> list[Path]:
+    local_parent.mkdir(parents=True, exist_ok=True)
+    if not remote_paths:
+        return []
+    marker = f"__SLEAP_TAR_START_{uuid.uuid4().hex}__"
+    output = Path(tempfile.NamedTemporaryFile(prefix="sleap-download-", suffix=".tar.gz", delete=False).name)
+    captured = Path(tempfile.NamedTemporaryFile(prefix="sleap-ssh-output-", suffix=".bin", delete=False).name)
+    paths_args = " ".join(shlex.quote(path) for path in remote_paths)
+    remote_command = (
+        "set -e; "
+        f"printf '\\n{marker}\\n'; "
+        'tmp="$(mktemp -d)"; '
+        'trap \'rm -rf "$tmp"\' EXIT; '
+        f"for target in {paths_args}; do "
+        'test -f "$target"; '
+        'name="$(basename "$target")"; '
+        'cp -f "$target" "$tmp/$name"; '
+        "done; "
+        'tar -C "$tmp" -czf - .'
+    )
+    args = ["ssh", *ssh_multiplex_options(config), config.ssh_target, remote_command]
+    try:
+        if input_callback and sys.platform == "win32":
+            _capture_to_file_with_windows_askpass(args, captured, emit=emit)
+        else:
+            run_capture_to_file(args, captured, emit=emit)
+
+        marker_bytes = ("\n" + marker + "\n").encode()
+        if not _copy_after_marker(captured, output, marker_bytes):
+            preview = captured.read_bytes()[:1200].decode(errors="replace")
+            raise RuntimeError("Could not find download marker in SSH output. Remote shell may be printing startup text:\n" + preview)
+        extracted: list[Path] = []
+        with tarfile.open(output, mode="r:gz") as archive:
+            for member in archive.getmembers():
+                if not member.isfile():
+                    continue
+                name = Path(member.name).name
+                if not name:
+                    continue
+                member.name = name
+                archive.extract(member, local_parent)
+                extracted.append(local_parent / name)
+        return extracted
+    finally:
+        captured.unlink(missing_ok=True)
+        output.unlink(missing_ok=True)
+
+
 def upload_gl_sync(
     config: PipelineConfig,
     local_gl_sync: Path,
