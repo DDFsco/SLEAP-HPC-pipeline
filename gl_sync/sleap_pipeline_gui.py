@@ -636,48 +636,42 @@ class PipelineApp(tk.Tk):
             local_model_dir = lib.local_model_dir(self.config_data, task, model)
             job_ids: list[str] = []
             if sys.platform == "win32":
-                videos_to_upload: list[Path] = []
-                for video in video_paths:
-                    remote_video = f"{remote_root}/videos/{video.name}"
-                    remote_size = lib.remote_file_size(
-                        self.config_data,
-                        remote_video,
-                        emit=self.emit,
-                        input_callback=self.auth_input,
-                    )
-                    if remote_size == video.stat().st_size:
-                        self.emit(f"skip upload: {video.name} (same size on GL)")
-                    else:
-                        videos_to_upload.append(video)
-                remote_model = f"{remote_root}/models/{model}"
-                self.emit(f"Checking GL model: {remote_model}")
-                model_check = lib.ssh(
-                    self.config_data,
-                    f"test -e {sh_quote(remote_model)}",
-                    emit=self.emit,
-                    check=False,
-                    input_callback=self.auth_input,
-                )
-                model_to_upload = None
-                if model_check.returncode:
-                    if local_model_dir is None:
-                        raise FileNotFoundError(f"Model not found on GL and local model folder is missing: tasks/{task}/models/{model}")
-                    self.emit(f"GL is missing model; bundling local model for upload: {local_model_dir}")
-                    model_to_upload = local_model_dir
-                else:
-                    self.emit(f"Model already exists on GL: {model}")
-                result = lib.submit_predict_single_ssh(
+                result = lib.submit_predict_existing_remote_single_ssh(
                     self.config_data,
                     remote_root,
                     video_paths,
-                    videos_to_upload,
                     model,
                     preset,
-                    model_to_upload,
                     emit=self.emit,
                     input_callback=self.auth_input,
                 )
-                job_ids = parse_job_ids(result.stdout)
+                if result.returncode == 0:
+                    job_ids = parse_job_ids(result.stdout)
+                else:
+                    missing_video_names = set(lib.predict_upload_video_names(result.stdout))
+                    model_to_upload = None
+                    if lib.predict_needs_model_upload(result.stdout):
+                        if local_model_dir is None:
+                            raise FileNotFoundError(f"Model not found on GL and local model folder is missing: tasks/{task}/models/{model}")
+                        self.emit(f"GL is missing model; bundling local model for upload: {local_model_dir}")
+                        model_to_upload = local_model_dir
+                    videos_to_upload = [video for video in video_paths if video.name in missing_video_names]
+                    for video in videos_to_upload:
+                        self.emit(f"GL is missing or has a different-size video; bundling for upload: {video.name}")
+                    if result.returncode != 42 and not missing_video_names and model_to_upload is None:
+                        raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
+                    result = lib.submit_predict_single_ssh(
+                        self.config_data,
+                        remote_root,
+                        video_paths,
+                        videos_to_upload,
+                        model,
+                        preset,
+                        model_to_upload,
+                        emit=self.emit,
+                        input_callback=self.auth_input,
+                    )
+                    job_ids = parse_job_ids(result.stdout)
             else:
                 lib.ssh(self.config_data, f"mkdir -p {remote_root}/videos {remote_root}/exports", emit=self.emit, input_callback=self.auth_input)
                 remote_model = f"{remote_root}/models/{model}"

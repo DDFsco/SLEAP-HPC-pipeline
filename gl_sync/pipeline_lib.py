@@ -1145,6 +1145,22 @@ def remote_file_size(
     return None
 
 
+PREDICT_UPLOAD_VIDEO_MARKER = "__SLEAP_PREDICT_UPLOAD_VIDEO__"
+PREDICT_UPLOAD_MODEL_MARKER = "__SLEAP_PREDICT_UPLOAD_MODEL__"
+
+
+def predict_upload_video_names(output: str) -> list[str]:
+    names: list[str] = []
+    for line in output.splitlines():
+        if PREDICT_UPLOAD_VIDEO_MARKER in line:
+            names.append(line.split(PREDICT_UPLOAD_VIDEO_MARKER, 1)[1].strip())
+    return names
+
+
+def predict_needs_model_upload(output: str) -> bool:
+    return PREDICT_UPLOAD_MODEL_MARKER in output
+
+
 def _remote_root_shell(remote_spec: str) -> str:
     remote_spec = remote_spec.rstrip("/")
     if remote_spec == "~":
@@ -1316,6 +1332,69 @@ def submit_predict_single_ssh(
         return run_streaming_file(args, archive_path, emit=emit)
     finally:
         archive_path.unlink(missing_ok=True)
+
+
+def submit_predict_existing_remote_single_ssh(
+    config: PipelineConfig,
+    task_remote_root: str,
+    videos: list[Path],
+    model: str,
+    preset: str,
+    emit: Callable[[str], None] | None = None,
+    input_callback: InputCallback | None = None,
+) -> subprocess.CompletedProcess[str]:
+    video_paths = [path.resolve() for path in videos]
+    script_root = _remote_root_shell(config.gl_sync_remote)
+    model_marker = PREDICT_UPLOAD_MODEL_MARKER
+    video_marker = PREDICT_UPLOAD_VIDEO_MARKER
+    video_checks = "".join(
+        f"check_video {shlex.quote(path.name)} {path.stat().st_size}; "
+        for path in video_paths
+    )
+    video_names = " ".join(shlex.quote(path.name) for path in video_paths)
+    remote_command = (
+        "set -e; "
+        f"work={shlex.quote(task_remote_root)}; "
+        f"{_remote_assignment('script_root', script_root)}; "
+        f"model_name={shlex.quote(model)}; "
+        "missing=0; "
+        'mkdir -p "$work/videos" "$work/exports"; '
+        'check_video() { '
+        'video_name="$1"; '
+        'expected_size="$2"; '
+        'remote_video="$work/videos/$video_name"; '
+        'actual_size="$(test -f "$remote_video" && stat -c %s "$remote_video" || printf missing)"; '
+        'if [[ "$actual_size" == "$expected_size" ]]; then '
+        'echo "skip upload: $video_name (same size on GL)"; '
+        'else '
+        f'echo "{video_marker}$video_name"; '
+        "missing=1; "
+        "fi; "
+        "}; "
+        'echo "Checking GL model: $work/models/$model_name"; '
+        'if [[ -e "$work/models/$model_name" ]]; then '
+        'echo "Model already exists on GL: $model_name"; '
+        'else '
+        f'echo "{model_marker}$model_name"; '
+        "missing=1; "
+        "fi; "
+        f"{video_checks}"
+        'if [[ "$missing" -ne 0 ]]; then exit 42; fi; '
+        f"for video_name in {video_names}; do "
+        f"SLEAP_SCRATCH_DIR={shlex.quote(task_remote_root)} "
+        '"$script_root/predict.sh" '
+        f"--preset {shlex.quote(preset)} "
+        '"videos/${video_name}" '
+        '"models/${model_name}"; '
+        "done"
+    )
+    return ssh(
+        config,
+        remote_command,
+        emit=emit,
+        check=False,
+        input_callback=input_callback,
+    )
 
 
 def download_remote_path_tar(
