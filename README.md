@@ -1,4 +1,4 @@
-# SLEAP Pipeline Manager
+# SLEAP HPC Manager
 
 A desktop workflow manager for running SLEAP pose-estimation projects across a local labeling workstation and the University of Michigan Great Lakes HPC cluster.
 
